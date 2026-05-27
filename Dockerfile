@@ -27,13 +27,9 @@ ENV PATH="/root/.nimby/nim/bin:$PATH"
 
 WORKDIR /workspace/cogame-planet-wars
 COPY nimby.lock .
-RUN nimby sync nimby.lock && \
-  nimby install https://github.com/Metta-AI/bitworld.git
+RUN nimby --global sync nimby.lock
 
 COPY . .
-RUN mkdir -p /workspace/bitworld-assets && \
-  cp -R bitworld/client /workspace/bitworld-assets/client
-
 ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
 ARG NimMain="src/planet_wars.nim"
@@ -55,7 +51,6 @@ RUN apt-get update && \
 
 WORKDIR /workspace/cogame-planet-wars
 COPY --from=build /bin/planet_wars /bin/planet_wars
-COPY --from=build /workspace/bitworld-assets/client ./client
 COPY coworld_manifest.json .
 
 EXPOSE 8080

@@ -44,23 +44,28 @@ proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
   request.headers["Sec-WebSocket-Key"].len > 0
 
+proc clientStaticBody(route: string): string =
+  ## Returns the embedded BitWorld client body for one route.
+  case clientRoute(route, GlobalClientRoute)
+  of PlayerClientRoute, GlobalClientRoute, AdminClientRoute,
+      RewardClientRoute:
+    EmbeddedGlobalClientHtml
+  of SnappyClientRoute:
+    EmbeddedSnappyClientJs
+  else:
+    ""
+
 proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route, GlobalClientRoute)
-  if filePath.len == 0:
+  let body = clientStaticBody(route)
+  if body.len == 0:
     return false
   var headers: HttpHeaders
   headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
   headers["Cache-Control"] = "no-cache"
-  if not fileExists(filePath):
-    request.respond(404, headers, "Missing static client: " & route)
-    return true
-  try:
-    request.respond(200, headers, readFile(filePath))
-  except IOError as e:
-    request.respond(500, headers, "Could not read static client: " & e.msg)
+  request.respond(200, headers, body)
   true
 
 proc serveStaticClientHtml(request: Request): bool =
