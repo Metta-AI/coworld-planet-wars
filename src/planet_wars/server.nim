@@ -1,7 +1,7 @@
 import
   std/[locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/client, bitworld/protocol, sim, global, profiling
+  bitworld/client, bitworld/protocol, bitworld/runtime, sim, global, profiling
 
 const
   HealthzPath = "/healthz"
@@ -274,7 +274,8 @@ proc writeScoreFile(sim: SimServer, path: string) =
 proc writeScoresIfNeeded(
   sim: SimServer,
   path: string,
-  lastRevision: var int
+  lastRevision: var int,
+  uri = ""
 ) {.measure.} =
   ## Writes scores when score-visible state changed.
   if path.len == 0:
@@ -282,6 +283,14 @@ proc writeScoresIfNeeded(
   if sim.scoreRevision == lastRevision:
     return
   sim.writeScoreFile(path)
+  if uri.len > 0:
+    writeCogameFileToUri(
+      uri,
+      path,
+      "application/json",
+      CogameResultsUriEnv,
+      cogameHttpMethodForUri(uri, CogameResultsMethodEnv)
+    )
   lastRevision = sim.scoreRevision
 
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
@@ -312,7 +321,8 @@ proc runServerLoop*(
   port = DefaultPort,
   seed = 0x1A7E7,
   simConfig = defaultSimConfig(),
-  saveScoresPath = ""
+  saveScoresPath = "",
+  saveScoresUri = ""
 ) =
   ## Runs the Planet Wars server loop.
   startProfileTrace()
@@ -338,7 +348,7 @@ proc runServerLoop*(
     lastTick = getMonoTime()
     lastScoreRevision = -1
     gamesFinished = 0
-  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
   while true:
     var
       sockets: seq[WebSocket] = @[]
@@ -393,7 +403,7 @@ proc runServerLoop*(
           rewardViewers.add(websocket)
     let wasGameOver = sim.gameOver
     sim.step(inputs)
-    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
     let gameFinished = sim.gameOver and not wasGameOver
     let rewardPacket = sim.buildRewardPacket()
     for i in 0 ..< sockets.len:
@@ -447,5 +457,5 @@ proc runServerLoop*(
       {.gcsafe.}:
         withLock appState.lock:
           resetConnectedClients()
-      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision)
+      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
     runFrameLimiter(lastTick)

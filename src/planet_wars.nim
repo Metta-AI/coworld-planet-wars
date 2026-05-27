@@ -1,6 +1,6 @@
 import
-  std/[json, parseopt, strutils],
-  bitworld/cogame_runtime,
+  std/[json, os, parseopt, strutils],
+  bitworld/runtime,
   jsony,
   bitworld/protocol,
   planet_wars/server,
@@ -40,7 +40,7 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
 
 proc defaultScoresPath(): string =
   ## Returns the configured score save path from the environment.
-  pathFromCogameEnv(CogameResultsUriEnv)
+  outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
 
 proc isKnownConfigField(name: string): bool =
   ## Returns true when a JSON config field is supported.
@@ -174,5 +174,6 @@ when isMainModule:
     config.port,
     config.seed,
     config.simConfig,
-    config.saveScoresPath
+    config.saveScoresPath,
+    getEnv(CogameResultsUriEnv)
   )
