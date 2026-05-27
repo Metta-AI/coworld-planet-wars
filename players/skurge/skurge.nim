@@ -936,11 +936,19 @@ proc queryEscape(value: string): string =
 proc withPath(url, path: string): string =
   ## Adds a websocket path when the supplied URL has no path.
   let schemePos = url.find("://")
-  if schemePos < 0:
-    return url
-  let pathStart = url.find('/', schemePos + 3)
-  if pathStart >= 0:
-    return url
+  let start =
+    if schemePos < 0:
+      0
+    else:
+      schemePos + 3
+  for i in start ..< url.len:
+    case url[i]
+    of '/':
+      return url
+    of '?', '#':
+      return url[0 ..< i] & path & url[i .. ^1]
+    else:
+      discard
   url & path
 
 proc addQueryParam(url, key, value: string): string =
@@ -1064,8 +1072,12 @@ when isMainModule:
   var
     address = DefaultHost
     port = SkurgeDefaultPort
-    url = ""
-    name = "skurge"
+    url = getEnv("COGAMES_ENGINE_WS_URL")
+    name =
+      if url.len > 0:
+        ""
+      else:
+        "skurge"
     token = ""
     slot = -1
     maxSteps = 0
