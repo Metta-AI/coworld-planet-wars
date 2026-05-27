@@ -56,4 +56,4 @@ COPY coworld_manifest.json .
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
-CMD ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]
+CMD ["/bin/planet_wars"]

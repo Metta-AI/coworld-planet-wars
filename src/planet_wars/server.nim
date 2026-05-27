@@ -99,6 +99,12 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc isGlobalSocketPath(path: string): bool =
+  ## Returns true for global viewer websocket endpoints.
+  path == GlobalWebSocketPath or
+    path == AdminWebSocketPath or
+    path == ReplayWebSocketPath
+
 proc httpHandler(request: Request) =
   ## Handles HTTP routes and websocket upgrades.
   if request.serveHealthz():
@@ -116,8 +122,8 @@ proc httpHandler(request: Request) =
         appState.playerIndices[websocket] = UnassignedPlayerIndex
         appState.inputMasks[websocket] = 0
         appState.lastAppliedMasks[websocket] = 0
-  elif request.path == GlobalWebSocketPath and request.httpMethod == "GET" and
-      request.isWebSocketUpgrade():
+  elif request.path.isGlobalSocketPath() and
+      request.httpMethod == "GET" and request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -262,34 +268,17 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
     result.add($player.score)
     result.add("\n")
 
-proc writeScoreFile(sim: SimServer, path: string) =
-  ## Writes the current score JSON if a path is configured.
-  if path.len == 0:
-    return
-  let dir = path.parentDir()
-  if dir.len > 0:
-    createDir(dir)
-  writeFile(path, sim.playerScoresJson() & "\n")
-
 proc writeScoresIfNeeded(
   sim: SimServer,
-  path: string,
   lastRevision: var int,
-  uri = ""
+  runtimeConfig: RuntimeConfig
 ) {.measure.} =
   ## Writes scores when score-visible state changed.
-  if path.len == 0:
+  if runtimeConfig.resultsUri.len == 0:
     return
   if sim.scoreRevision == lastRevision:
     return
-  sim.writeScoreFile(path)
-  if uri.len > 0:
-    writeCogameFileToUri(
-      uri,
-      path,
-      "application/json",
-      CogameResultsUriEnv
-    )
+  runtimeConfig.writeResults(sim.playerScoresJson() & "\n")
   lastRevision = sim.scoreRevision
 
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
@@ -320,8 +309,7 @@ proc runServerLoop*(
   port = DefaultPort,
   seed = 0x1A7E7,
   simConfig = defaultSimConfig(),
-  saveScoresPath = "",
-  saveScoresUri = ""
+  runtimeConfig = RuntimeConfig()
 ) =
   ## Runs the Planet Wars server loop.
   startProfileTrace()
@@ -347,7 +335,6 @@ proc runServerLoop*(
     lastTick = getMonoTime()
     lastScoreRevision = -1
     gamesFinished = 0
-  sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
   while true:
     var
       sockets: seq[WebSocket] = @[]
@@ -402,7 +389,6 @@ proc runServerLoop*(
           rewardViewers.add(websocket)
     let wasGameOver = sim.gameOver
     sim.step(inputs)
-    sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
     let gameFinished = sim.gameOver and not wasGameOver
     let rewardPacket = sim.buildRewardPacket()
     for i in 0 ..< sockets.len:
@@ -449,12 +435,15 @@ proc runServerLoop*(
     if gameFinished:
       inc gamesFinished
       echo "Planet Wars game finished: ", gamesFinished
+      sim.writeScoresIfNeeded(lastScoreRevision, runtimeConfig)
       if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
+        runtimeConfig.writeReplay(
+          "{\"format\":\"planet-wars-replay-v1\"}\n"
+        )
         break
       sim = initSimServer(seed + gamesFinished, simConfig)
       lastScoreRevision = -1
       {.gcsafe.}:
         withLock appState.lock:
           resetConnectedClients()
-      sim.writeScoresIfNeeded(saveScoresPath, lastScoreRevision, saveScoresUri)
     runFrameLimiter(lastTick)

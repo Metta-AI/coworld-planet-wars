@@ -1,5 +1,5 @@
 import
-  std/[json, os, parseopt, strutils],
+  std/json,
   bitworld/runtime,
   jsony,
   bitworld/protocol,
@@ -12,19 +12,6 @@ type
     port: int
     seed: int
     simConfig: SimConfig
-    saveScoresPath: string
-
-proc readConfigString(node: JsonNode, name: string, value: var string) =
-  ## Reads one optional string config field.
-  if not node.hasKey(name):
-    return
-  let item = node[name]
-  if item.kind != JString:
-    raise newException(
-      PlanetWarsError,
-      "Config field " & name & " must be a string."
-    )
-  value = item.getStr()
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
   ## Reads one optional integer config field.
@@ -38,21 +25,14 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
     )
   value = item.getInt()
 
-proc defaultScoresPath(): string =
-  ## Returns the configured score save path from the environment.
-  outputPathFromCogameEnv(CogameResultsUriEnv, "scores.json")
-
 proc isKnownConfigField(name: string): bool =
   ## Returns true when a JSON config field is supported.
   case name
-  of "address",
-      "port",
-      "seed",
+  of "seed",
       "planetCount",
       "maxTicks",
       "maxGames",
-      "tokens",
-      "saveScoresPath":
+      "tokens":
     true
   else:
     false
@@ -81,92 +61,27 @@ proc update(config: var RunConfig, jsonText: string) =
   if node.kind != JObject:
     raise newException(PlanetWarsError, "Config must be a JSON object.")
   node.validateConfigFields()
-  node.readConfigString("address", config.address)
-  node.readConfigInt("port", config.port)
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("planetCount", config.simConfig.planetCount)
   node.readConfigInt("maxTicks", config.simConfig.maxTicks)
   node.readConfigInt("maxGames", config.simConfig.maxGames)
-  node.readConfigString("saveScoresPath", config.saveScoresPath)
-
-proc requireOptionValue(name, value: string) =
-  ## Raises when a CLI option is missing its value.
-  if value.len == 0:
-    raise newException(
-      PlanetWarsError,
-      "Option --" & name & " requires a value."
-    )
-
-proc parseOptionInt(name, value: string): int =
-  ## Parses one integer CLI option.
-  name.requireOptionValue(value)
-  try:
-    result = parseInt(value)
-  except ValueError:
-    raise newException(
-      PlanetWarsError,
-      "Option --" & name & " must be an integer."
-    )
 
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured score output paths.
   echo "Using planet count: " & $config.simConfig.planetCount
   echo "Using max ticks: " & $config.simConfig.maxTicks
   echo "Using max games: " & $config.simConfig.maxGames
-  if config.saveScoresPath.len > 0:
-    echo "Writing scores file: " & config.saveScoresPath
-  else:
-    echo "Not writing scores file."
 
 when isMainModule:
+  let runtimeConfig = readRuntimeConfig(DefaultHost, DefaultPort)
   var
     config = RunConfig(
-      address: cogameHost(DefaultHost),
-      port: cogamePort(DefaultPort),
+      address: runtimeConfig.host,
+      port: runtimeConfig.port,
       seed: 0x1A7E7,
-      simConfig: defaultSimConfig(),
-      saveScoresPath: defaultScoresPath()
+      simConfig: defaultSimConfig()
     )
-    configPath = pathFromCogameEnv(CogameConfigUriEnv)
-    configJson = ""
-  for kind, key, val in getopt():
-    case kind
-    of cmdLongOption:
-      case key
-      of "address":
-        key.requireOptionValue(val)
-        config.address = val
-      of "port":
-        config.port = key.parseOptionInt(val)
-      of "seed":
-        config.seed = key.parseOptionInt(val)
-      of "planetCount":
-        config.simConfig.planetCount = key.parseOptionInt(val)
-      of "maxTicks":
-        config.simConfig.maxTicks = key.parseOptionInt(val)
-      of "maxGames":
-        config.simConfig.maxGames = key.parseOptionInt(val)
-      of "saveScoresPath":
-        key.requireOptionValue(val)
-        config.saveScoresPath = val
-      of "config":
-        key.requireOptionValue(val)
-        configJson = val
-      of "config-file":
-        key.requireOptionValue(val)
-        configPath = val
-      else:
-        raise newException(PlanetWarsError, "Unknown option: --" & key)
-    of cmdShortOption:
-      raise newException(PlanetWarsError, "Unknown option: -" & key)
-    of cmdArgument:
-      raise newException(PlanetWarsError, "Unexpected argument: " & key)
-    of cmdEnd:
-      discard
-  if configPath.len > 0:
-    config.update(readFile(configPath))
-  if configJson.len > 0:
-    config.update(configJson)
+  config.update(runtimeConfig.config)
   config.simConfig.checkSimConfig()
   config.echoStartupPaths()
   runServerLoop(
@@ -174,6 +89,5 @@ when isMainModule:
     config.port,
     config.seed,
     config.simConfig,
-    config.saveScoresPath,
-    getEnv(CogameResultsUriEnv)
+    runtimeConfig
   )

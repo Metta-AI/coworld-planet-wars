@@ -34,6 +34,8 @@ const
   ScoreIntervalTicks* = TargetFps
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
+  AdminWebSocketPath* = "/admin"
+  ReplayWebSocketPath* = "/replay"
   RewardWebSocketPath* = "/reward"
   MotionScale* = 256
   CursorAccel* = 30

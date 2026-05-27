@@ -111,7 +111,7 @@
     "runnable": {
       "type": "game",
       "image": "ghcr.io/treeform/bitworld-planet-wars:latest",
-      "run": ["/bin/planet_wars", "--address:0.0.0.0", "--port:8080"]
+      "run": ["/bin/planet_wars"]
     }
   },
   "player": [
@@ -133,8 +133,8 @@
       "game_config": {
         "seed": 108519,
         "planetCount": 47,
-        "maxTicks": 18000,
-        "maxGames": 0
+        "maxTicks": 300,
+        "maxGames": 1
       },
       "description": "Short deterministic Planet Wars configuration used for manifest checks."
     }
