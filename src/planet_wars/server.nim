@@ -288,8 +288,7 @@ proc writeScoresIfNeeded(
       uri,
       path,
       "application/json",
-      CogameResultsUriEnv,
-      cogameHttpMethodForUri(uri, CogameResultsMethodEnv)
+      CogameResultsUriEnv
     )
   lastRevision = sim.scoreRevision
 
