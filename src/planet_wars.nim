@@ -11,6 +11,7 @@ type
     port: int
     seed: int
     simConfig: SimConfig
+    tokens: seq[string]
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
   ## Reads one optional integer config field.
@@ -23,6 +24,26 @@ proc readConfigInt(node: JsonNode, name: string, value: var int) =
       "Config field " & name & " must be an integer."
     )
   value = item.getInt()
+
+proc readConfigStrings(node: JsonNode, name: string, values: var seq[string]) =
+  ## Reads one optional string array config field.
+  if not node.hasKey(name):
+    return
+  let item = node[name]
+  if item.kind != JArray:
+    raise newException(
+      PlanetWarsError,
+      "Config field " & name & " must be an array."
+    )
+  var next: seq[string] = @[]
+  for i in 0 ..< item.len:
+    if item[i].kind != JString:
+      raise newException(
+        PlanetWarsError,
+        "Config field " & name & " item " & $i & " must be a string."
+      )
+    next.add item[i].getStr()
+  values = next
 
 proc isKnownConfigField(name: string): bool =
   ## Returns true when a JSON config field is supported.
@@ -64,6 +85,7 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigInt("planetCount", config.simConfig.planetCount)
   node.readConfigInt("maxTicks", config.simConfig.maxTicks)
   node.readConfigInt("maxGames", config.simConfig.maxGames)
+  node.readConfigStrings("tokens", config.tokens)
 
 proc echoStartupPaths(config: RunConfig) =
   ## Prints configured score output paths.
@@ -78,7 +100,8 @@ when isMainModule:
       address: runtimeConfig.host,
       port: runtimeConfig.port,
       seed: 0x1A7E7,
-      simConfig: defaultSimConfig()
+      simConfig: defaultSimConfig(),
+      tokens: @[]
     )
   config.update(runtimeConfig.config)
   config.simConfig.checkSimConfig()
@@ -88,5 +111,6 @@ when isMainModule:
     config.port,
     config.seed,
     config.simConfig,
-    runtimeConfig
+    runtimeConfig,
+    config.tokens
   )

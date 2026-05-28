@@ -1040,15 +1040,18 @@ proc runBot(
   token = "",
   slot = -1,
   maxSteps = 0,
-  chat = false
+  chat = false,
+  exitOnDisconnect = false
 ) =
   ## Connects Skurge to Planet Wars and runs the attack policy.
   let endpoint = connectUrl(address, url, name, token, port, slot)
+  var connected = false
   while true:
     try:
       echo "skurge connecting to ", endpoint
       var bot = initBot()
       let ws = newWebSocket(endpoint)
+      connected = true
       var lastMask = 0xff'u8
       if chat:
         ws.send(chatBlob("skurge online"), BinaryMessage)
@@ -1065,6 +1068,9 @@ proc runBot(
           ws.close()
           return
     except CatchableError as e:
+      if exitOnDisconnect and connected:
+        echo "skurge exiting after disconnect: ", e.msg
+        return
       echo "skurge reconnecting after error: ", e.msg
       sleep(250)
 
@@ -1082,6 +1088,7 @@ when isMainModule:
     slot = -1
     maxSteps = 0
     chat = false
+    exitOnDisconnect = url.len > 0
 
   for kind, key, value in getopt():
     case kind
@@ -1103,6 +1110,8 @@ when isMainModule:
         maxSteps = parseInt(value)
       of "chat":
         chat = true
+      of "exit-on-disconnect":
+        exitOnDisconnect = true
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdArgument, cmdShortOption:
@@ -1110,4 +1119,14 @@ when isMainModule:
     of cmdEnd:
       discard
 
-  runBot(address, port, url, name, token, slot, maxSteps, chat)
+  runBot(
+    address,
+    port,
+    url,
+    name,
+    token,
+    slot,
+    maxSteps,
+    chat,
+    exitOnDisconnect
+  )

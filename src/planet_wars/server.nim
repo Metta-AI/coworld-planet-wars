@@ -18,6 +18,7 @@ type
     playerViewers: Table[WebSocket, PlayerViewerState]
     globalViewers: Table[WebSocket, GlobalViewerState]
     rewardViewers: Table[WebSocket, bool]
+    tokens: seq[string]
     closedSockets: seq[WebSocket]
 
   ServerThreadArgs = object
@@ -38,6 +39,7 @@ proc initAppState() =
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
+  appState.tokens = @[]
   appState.closedSockets = @[]
 
 proc isWebSocketUpgrade(request: Request): bool =
@@ -71,6 +73,32 @@ proc playerIdentity(request: Request): string =
     return parts[0] & ":" & parts[1]
   request.remoteAddress
 
+proc playerSlot(request: Request): int =
+  ## Returns the requested player slot or -1 for automatic assignment.
+  let text = request.queryParams.getOrDefault("slot", "").strip()
+  if text.len == 0:
+    return -1
+  try:
+    result = parseInt(text)
+  except ValueError:
+    return int.high
+  if result < 0:
+    return int.high
+
+proc playerToken(request: Request): string =
+  ## Returns the requested player token.
+  request.queryParams.getOrDefault("token", "").strip()
+
+proc playerJoinAllowed(slot: int, token: string): bool =
+  ## Returns true when the configured token list accepts a join.
+  if appState.tokens.len == 0:
+    return true
+  if slot >= 0 and slot < appState.tokens.len:
+    return token == appState.tokens[slot]
+  if slot == -1:
+    return token in appState.tokens
+  false
+
 proc isGlobalSocketPath(path: string): bool =
   ## Returns true for global viewer websocket endpoints.
   path == GlobalWebSocketPath or
@@ -84,6 +112,18 @@ proc httpHandler(request: Request) =
   elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
+    let
+      slot = request.playerSlot()
+      token = request.playerToken()
+    var allowed = false
+    {.gcsafe.}:
+      withLock appState.lock:
+        allowed = playerJoinAllowed(slot, token)
+    if not allowed:
+      var headers: HttpHeaders
+      headers["Content-Type"] = "text/plain; charset=utf-8"
+      request.respond(403, headers, "player token rejected\n")
+      return
     let websocket = request.upgradeToWebSocket()
     {.gcsafe.}:
       withLock appState.lock:
@@ -281,13 +321,15 @@ proc runServerLoop*(
   port = DefaultPort,
   seed = 0x1A7E7,
   simConfig = defaultSimConfig(),
-  runtimeConfig = RuntimeConfig()
+  runtimeConfig = RuntimeConfig(),
+  tokens: seq[string] = @[]
 ) =
   ## Runs the Planet Wars server loop.
   startProfileTrace()
   defer:
     dumpProfileTrace()
   initAppState()
+  appState.tokens = tokens
   let httpServer = newServer(
     httpHandler,
     websocketHandler,
