@@ -25,7 +25,7 @@ https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-ARM64; \
 
 ENV PATH="/root/.nimby/nim/bin:$PATH"
 
-WORKDIR /workspace/cogame-planet-wars
+WORKDIR /workspace/coworld-planet-wars
 COPY nimby.lock .
 RUN nimby --global sync nimby.lock
 
@@ -36,7 +36,7 @@ ARG NimMain="src/planet_wars.nim"
 RUN nim $NimCommand \
   $NimFlags \
   --path:src \
-  --nimcache:/tmp/cogame-nimcache \
+  --nimcache:/tmp/coworld-nimcache \
   --out:/bin/planet_wars \
   $NimMain
 
@@ -49,7 +49,7 @@ RUN apt-get update && \
     curl && \
   rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/cogame-planet-wars
+WORKDIR /workspace/coworld-planet-wars
 COPY --from=build /bin/planet_wars /bin/planet_wars
 COPY coworld_manifest.json .
 

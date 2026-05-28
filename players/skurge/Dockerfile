@@ -25,7 +25,7 @@ https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-ARM64; \
 
 ENV PATH="/root/.nimby/nim/bin:$PATH"
 
-WORKDIR /workspace/cogame-planet-wars
+WORKDIR /workspace/coworld-planet-wars
 COPY nimby.lock .
 RUN nimby --global sync nimby.lock
 
@@ -36,7 +36,7 @@ ARG NimMain="players/skurge/skurge.nim"
 RUN nim $NimCommand \
   $NimFlags \
   --path:src \
-  --nimcache:/tmp/cogame-nimcache \
+  --nimcache:/tmp/coworld-nimcache \
   --out:/bin/skurge \
   $NimMain
 
