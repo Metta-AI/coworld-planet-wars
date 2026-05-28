@@ -2,7 +2,6 @@ import
   std/json,
   bitworld/runtime,
   jsony,
-  bitworld/protocol,
   planet_wars/server,
   planet_wars/sim
 
@@ -73,7 +72,7 @@ proc echoStartupPaths(config: RunConfig) =
   echo "Using max games: " & $config.simConfig.maxGames
 
 when isMainModule:
-  let runtimeConfig = readRuntimeConfig(DefaultHost, DefaultPort)
+  let runtimeConfig = readRuntimeConfig()
   var
     config = RunConfig(
       address: runtimeConfig.host,
