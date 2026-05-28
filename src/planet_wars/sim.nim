@@ -1,6 +1,6 @@
 import
   std/[json, os, random, strutils],
-  bitworld/pixelfonts, profiling
+  bitworld/client as bitworldClient, bitworld/pixelfonts, profiling
 
 type
   RgbaColor* = object
@@ -168,13 +168,9 @@ type
     textFont*: PixelFont
     chatMessages*: seq[ChatMessage]
 
-proc repoDir*(): string =
-  ## Returns the Bit World repository directory from the game cwd.
-  getCurrentDir() / ".."
-
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  repoDir() / "client" / "data"
+  bitworldClient.clientDir() / "data"
 
 proc loadTiny5Font*(): PixelFont =
   ## Loads the shared Tiny5 variable-width pixel font.

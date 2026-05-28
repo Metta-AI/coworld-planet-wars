@@ -44,34 +44,6 @@ proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when a GET request is a websocket upgrade.
   request.headers["Sec-WebSocket-Key"].len > 0
 
-proc clientStaticBody(route: string): string =
-  ## Returns the embedded BitWorld client body for one route.
-  case clientRoute(route, GlobalClientRoute)
-  of PlayerClientRoute, GlobalClientRoute, AdminClientRoute,
-      RewardClientRoute:
-    EmbeddedGlobalClientHtml
-  of SnappyClientRoute:
-    EmbeddedSnappyClientJs
-  else:
-    ""
-
-proc serveClientHtml(request: Request, route: string): bool =
-  ## Serves one static client file for a known client route.
-  if request.httpMethod != "GET":
-    return false
-  let body = clientStaticBody(route)
-  if body.len == 0:
-    return false
-  var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route, GlobalClientRoute)
-  headers["Cache-Control"] = "no-cache"
-  request.respond(200, headers, body)
-  true
-
-proc serveStaticClientHtml(request: Request): bool =
-  ## Serves one static client asset if the route matches.
-  request.serveClientHtml(request.path)
-
 proc serveHealthz(request: Request): bool =
   ## Serves the container health check endpoint.
   if request.path != HealthzPath or request.httpMethod notin ["GET", "HEAD"]:
@@ -146,7 +118,7 @@ proc httpHandler(request: Request) =
         appState.lastAppliedMasks.del(websocket)
         appState.globalViewers.del(websocket)
         appState.rewardViewers[websocket] = true
-  elif request.serveStaticClientHtml():
+  elif request.serveClientRoute(GlobalClientRoute):
     discard
   else:
     var headers: HttpHeaders
