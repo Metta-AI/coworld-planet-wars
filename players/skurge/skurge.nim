@@ -1,7 +1,7 @@
 import
   std/[options, os, parseopt, random, strutils, times],
   supersnappy, whisky,
-  bitworld/spriteprotocol,
+  bitworld/[spriteprotocol, sprites],
   planet_wars/sim
 
 const
