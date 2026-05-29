@@ -1,5 +1,6 @@
 import
   std/[json, os],
+  bitworld/spriteprotocol,
   planet_wars/global,
   planet_wars/sim
 
@@ -17,96 +18,6 @@ const
   ScorePanelDigitObjectBaseForTest = 15000
   ScorePanelNameObjectBaseForTest = 17000
   ScorePanelMaxScoreCharsForTest = 16
-
-type
-  SpritePacketObject = object
-    id: int
-    x: int
-    y: int
-    spriteId: int
-
-proc readU16(packet: openArray[uint8], offset: int): int =
-  ## Reads one little endian unsigned 16 bit value from a packet.
-  int(uint16(packet[offset]) or (uint16(packet[offset + 1]) shl 8))
-
-proc readI16(packet: openArray[uint8], offset: int): int =
-  ## Reads one little endian signed 16 bit value from a packet.
-  int(cast[int16](uint16(packet[offset]) or
-    (uint16(packet[offset + 1]) shl 8)))
-
-proc readU32(packet: openArray[uint8], offset: int): int =
-  ## Reads one little endian unsigned 32 bit value from a packet.
-  int(uint32(packet[offset]) or
-    (uint32(packet[offset + 1]) shl 8) or
-    (uint32(packet[offset + 2]) shl 16) or
-    (uint32(packet[offset + 3]) shl 24))
-
-proc spritePacketSpriteIds(packet: openArray[uint8]): seq[int] =
-  ## Returns all sprite ids defined in one sprite protocol packet.
-  var offset = 0
-  while offset < packet.len:
-    let messageType = packet[offset]
-    inc offset
-    case messageType
-    of 0x01'u8:
-      doAssert offset + 10 <= packet.len
-      result.add packet.readU16(offset)
-      let compressedLen = packet.readU32(offset + 6)
-      offset += 10 + compressedLen
-      doAssert offset + 2 <= packet.len
-      let labelLen = packet.readU16(offset)
-      offset += 2 + labelLen
-    of 0x02'u8:
-      offset += 11
-    of 0x03'u8:
-      offset += 2
-    of 0x04'u8:
-      discard
-    of 0x05'u8:
-      offset += 5
-    of 0x06'u8:
-      offset += 3
-    else:
-      doAssert false, "unknown sprite protocol message"
-
-proc spritePacketObjects(packet: openArray[uint8]): seq[SpritePacketObject] =
-  ## Returns all objects defined in one sprite protocol packet.
-  var offset = 0
-  while offset < packet.len:
-    let messageType = packet[offset]
-    inc offset
-    case messageType
-    of 0x01'u8:
-      doAssert offset + 10 <= packet.len
-      let compressedLen = packet.readU32(offset + 6)
-      offset += 10 + compressedLen
-      doAssert offset + 2 <= packet.len
-      let labelLen = packet.readU16(offset)
-      offset += 2 + labelLen
-    of 0x02'u8:
-      doAssert offset + 11 <= packet.len
-      result.add SpritePacketObject(
-        id: packet.readU16(offset),
-        x: packet.readI16(offset + 2),
-        y: packet.readI16(offset + 4),
-        spriteId: packet.readU16(offset + 9)
-      )
-      offset += 11
-    of 0x03'u8:
-      offset += 2
-    of 0x04'u8:
-      discard
-    of 0x05'u8:
-      offset += 5
-    of 0x06'u8:
-      offset += 3
-    else:
-      doAssert false, "unknown sprite protocol message"
-
-proc spritePacketObjectIds(packet: openArray[uint8]): seq[int] =
-  ## Returns all object ids defined in one sprite protocol packet.
-  for item in packet.spritePacketObjects():
-    result.add item.id
 
 proc findObject(
   objects: openArray[SpritePacketObject],

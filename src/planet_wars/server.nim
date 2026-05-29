@@ -1,7 +1,7 @@
 import
   std/[locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/client, bitworld/profile, bitworld/protocol, bitworld/runtime,
+  bitworld/client, bitworld/profile, bitworld/spriteprotocol, bitworld/runtime,
   sim, global
 
 const
