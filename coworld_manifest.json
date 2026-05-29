@@ -188,7 +188,7 @@
         "seed": 108519,
         "planetCount": 47,
         "maxTicks": 1200,
-        "maxGames": 1
+        "maxGames": 0
       },
       "description": "Short deterministic Planet Wars configuration used for manifest checks."
     }
@@ -198,7 +198,7 @@
       "seed": 108519,
       "planetCount": 47,
       "maxTicks": 1200,
-      "maxGames": 1
+      "maxGames": 0
     },
     "players": [
       {

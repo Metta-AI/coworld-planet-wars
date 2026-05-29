@@ -87,11 +87,22 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigInt("maxGames", config.simConfig.maxGames)
   node.readConfigStrings("tokens", config.tokens)
 
-proc echoStartupPaths(config: RunConfig) =
-  ## Prints configured score output paths.
-  echo "Using planet count: " & $config.simConfig.planetCount
-  echo "Using max ticks: " & $config.simConfig.maxTicks
-  echo "Using max games: " & $config.simConfig.maxGames
+proc limitText(value: int): string =
+  ## Returns a readable text value for a numeric limit.
+  if value > 0:
+    $value
+  else:
+    "infinite"
+
+proc echoStartupConfig(config: RunConfig) =
+  ## Prints the effective startup config without token secrets.
+  echo "Planet Wars config: host=", config.address,
+    " port=", config.port,
+    " seed=", config.seed,
+    " tokens=", config.tokens.len,
+    " planetCount=", config.simConfig.planetCount,
+    " maxTicks=", config.simConfig.maxTicks.limitText(),
+    " maxGames=", config.simConfig.maxGames.limitText()
 
 when isMainModule:
   let runtimeConfig = readRuntimeConfig()
@@ -105,7 +116,7 @@ when isMainModule:
     )
   config.update(runtimeConfig.config)
   config.simConfig.checkSimConfig()
-  config.echoStartupPaths()
+  config.echoStartupConfig()
   runServerLoop(
     config.address,
     config.port,
