@@ -1,8 +1,8 @@
 import
   std/algorithm,
   supersnappy,
-  bitworld/pixelfonts,
-  bitworld/protocol, sim, profiling
+  bitworld/pixelfonts, bitworld/profile,
+  bitworld/protocol, sim
 
 const
   NeutralPlanetSpriteBase = 100

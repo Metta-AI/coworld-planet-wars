@@ -1,7 +1,8 @@
 import
   std/[locks, monotimes, os, strutils, tables, times],
   mummy,
-  bitworld/client, bitworld/protocol, bitworld/runtime, sim, global, profiling
+  bitworld/client, bitworld/profile, bitworld/protocol, bitworld/runtime,
+  sim, global
 
 const
   HealthzPath = "/healthz"
@@ -327,7 +328,7 @@ proc runServerLoop*(
   ## Runs the Planet Wars server loop.
   startProfileTrace()
   defer:
-    dumpProfileTrace()
+    finishProfileTrace()
   initAppState()
   appState.tokens = tokens
   let httpServer = newServer(
@@ -444,8 +445,8 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             sim.removePlayer(globalViewers[i])
-    if profileTraceTickReached(sim.tickCount):
-      dumpProfileTrace()
+    if profileShouldDump(sim.tickCount):
+      finishProfileTrace()
     if gameFinished:
       inc gamesFinished
       echo "Planet Wars game finished: ", gamesFinished

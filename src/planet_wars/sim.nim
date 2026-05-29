@@ -1,6 +1,6 @@
 import
   std/[json, os, random, strutils],
-  bitworld/client as bitworldClient, bitworld/pixelfonts, profiling
+  bitworld/client as bitworldClient, bitworld/pixelfonts, bitworld/profile
 
 type
   RgbaColor* = object
