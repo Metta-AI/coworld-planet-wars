@@ -1,13 +1,7 @@
 import
   std/[json, os, random, strutils],
-  bitworld/client as bitworldClient, bitworld/pixelfonts, bitworld/profile
-
-type
-  RgbaColor* = object
-    r*: uint8
-    g*: uint8
-    b*: uint8
-    a*: uint8
+  bitworld/client as bitworldClient, bitworld/pixelfonts, bitworld/profile,
+  bitworld/sprites
 
 const
   GameName* = "planet_wars"

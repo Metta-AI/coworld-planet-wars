@@ -1,7 +1,7 @@
 import
   std/algorithm,
   bitworld/pixelfonts, bitworld/profile,
-  bitworld/spriteprotocol, sim
+  bitworld/spriteprotocol, bitworld/sprites, sim
 
 const
   NeutralPlanetSpriteBase = 100
@@ -54,11 +54,6 @@ const
   PlanetTextMaxChars = 8
 
 type
-  RgbaSprite = object
-    width: int
-    height: int
-    pixels: seq[uint8]
-
   WorldSpriteObject = object
     id: int
     x: int
@@ -107,132 +102,6 @@ proc initGlobalViewerState*(): GlobalViewerState =
 proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
   discard
-
-proc rgbaSpriteIndex(sprite: RgbaSprite, x, y: int): int =
-  ## Returns the byte offset for one RGBA sprite pixel.
-  (y * sprite.width + x) * 4
-
-proc newRgbaSprite(width, height: int): RgbaSprite =
-  ## Allocates a transparent RGBA sprite.
-  result.width = width
-  result.height = height
-  result.pixels = newSeq[uint8](width * height * 4)
-
-proc putRgbaPixel(sprite: var RgbaSprite, x, y: int, color: RgbaColor) =
-  ## Writes one full-color RGBA pixel into a sprite.
-  if x < 0 or y < 0 or x >= sprite.width or y >= sprite.height:
-    return
-  let offset = sprite.rgbaSpriteIndex(x, y)
-  sprite.pixels[offset] = color.r
-  sprite.pixels[offset + 1] = color.g
-  sprite.pixels[offset + 2] = color.b
-  sprite.pixels[offset + 3] = color.a
-
-proc withAlpha(color: RgbaColor, alpha: uint8): RgbaColor =
-  ## Returns a color with a replaced alpha channel.
-  RgbaColor(r: color.r, g: color.g, b: color.b, a: alpha)
-
-proc fillRect(
-  sprite: var RgbaSprite,
-  x,
-  y,
-  width,
-  height: int,
-  color: RgbaColor
-) =
-  ## Fills one clipped rectangle.
-  for py in y ..< y + height:
-    for px in x ..< x + width:
-      sprite.putRgbaPixel(px, py, color)
-
-proc strokeRect(
-  sprite: var RgbaSprite,
-  x,
-  y,
-  width,
-  height: int,
-  color: RgbaColor
-) =
-  ## Strokes one clipped rectangle.
-  for px in x ..< x + width:
-    sprite.putRgbaPixel(px, y, color)
-    sprite.putRgbaPixel(px, y + height - 1, color)
-  for py in y ..< y + height:
-    sprite.putRgbaPixel(x, py, color)
-    sprite.putRgbaPixel(x + width - 1, py, color)
-
-proc drawHSpan(sprite: var RgbaSprite, x0, x1, y: int, color: RgbaColor) =
-  ## Draws one horizontal span into an RGBA sprite.
-  let
-    startX = min(x0, x1)
-    endX = max(x0, x1)
-  for x in startX .. endX:
-    sprite.putRgbaPixel(x, y, color)
-
-proc plotCircleOctants(
-  sprite: var RgbaSprite,
-  cx,
-  cy,
-  x,
-  y: int,
-  color: RgbaColor
-) =
-  ## Plots all octants for one circle point.
-  sprite.putRgbaPixel(cx + x, cy + y, color)
-  sprite.putRgbaPixel(cx - x, cy + y, color)
-  sprite.putRgbaPixel(cx + x, cy - y, color)
-  sprite.putRgbaPixel(cx - x, cy - y, color)
-  sprite.putRgbaPixel(cx + y, cy + x, color)
-  sprite.putRgbaPixel(cx - y, cy + x, color)
-  sprite.putRgbaPixel(cx + y, cy - x, color)
-  sprite.putRgbaPixel(cx - y, cy - x, color)
-
-proc drawCircleFill(
-  sprite: var RgbaSprite,
-  cx,
-  cy,
-  radius: int,
-  color: RgbaColor
-) =
-  ## Draws a filled circle into an RGBA sprite.
-  var
-    x = radius
-    y = 0
-    decision = 1 - radius
-  while x >= y:
-    sprite.drawHSpan(cx - x, cx + x, cy + y, color)
-    sprite.drawHSpan(cx - x, cx + x, cy - y, color)
-    sprite.drawHSpan(cx - y, cx + y, cy + x, color)
-    sprite.drawHSpan(cx - y, cx + y, cy - x, color)
-    inc y
-    if decision < 0:
-      decision += 2 * y + 1
-    else:
-      dec x
-      decision += 2 * (y - x) + 1
-
-proc drawCircleRing(
-  sprite: var RgbaSprite,
-  cx,
-  cy,
-  radius,
-  thickness: int,
-  color: RgbaColor
-) =
-  ## Draws a circle ring into an RGBA sprite.
-  for ringRadius in countdown(radius, max(0, radius - thickness + 1)):
-    var
-      x = ringRadius
-      y = 0
-      decision = 1 - ringRadius
-    while x >= y:
-      sprite.plotCircleOctants(cx, cy, x, y, color)
-      inc y
-      if decision < 0:
-        decision += 2 * y + 1
-      else:
-        dec x
-        decision += 2 * (y - x) + 1
 
 proc objectVisible(
   x,
@@ -301,25 +170,6 @@ proc flushWorldObjects(
 proc planetSpriteRadius(size: PlanetSize): int =
   ## Returns the rendered sprite radius for one planet size.
   planetRadius(size) + PlanetSpritePad
-
-proc scaleColor(color: RgbaColor, percent: int): RgbaColor =
-  ## Returns a color scaled by a percentage.
-  RgbaColor(
-    r: uint8(clamp(int(color.r) * percent div 100, 0, 255)),
-    g: uint8(clamp(int(color.g) * percent div 100, 0, 255)),
-    b: uint8(clamp(int(color.b) * percent div 100, 0, 255)),
-    a: color.a
-  )
-
-proc mixColor(a, b: RgbaColor, bPercent: int): RgbaColor =
-  ## Returns a linear mix of two colors.
-  let percent = clamp(bPercent, 0, 100)
-  RgbaColor(
-    r: uint8((int(a.r) * (100 - percent) + int(b.r) * percent) div 100),
-    g: uint8((int(a.g) * (100 - percent) + int(b.g) * percent) div 100),
-    b: uint8((int(a.b) * (100 - percent) + int(b.b) * percent) div 100),
-    a: max(a.a, b.a)
-  )
 
 proc neutralPlanetSpriteId(size: PlanetSize): int =
   ## Returns the sprite id for one neutral planet sprite.
