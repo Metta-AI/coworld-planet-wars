@@ -1,5 +1,20 @@
 # Planet Wars
 
+<!-- COWORLD-REPO-STATUS:START -->
+> [!NOTE]
+> Coworld repo status: **incomplete** (`coworld-incomplete`).
+> Canonical repository: `Metta-AI/coworld-planet-wars`.
+> Manifest path: `coworld_manifest.json`.
+> Build path: `Dockerfile`
+> Certification: blocked until `uv run coworld certify coworld_manifest.json` passes and the result is recorded.
+>
+> Missing pieces:
+> - [ ] Validate the root concrete manifest against the current Coworld schema.
+> - [ ] Run `uv run coworld certify coworld_manifest.json` with the bundled players.
+> - [ ] Switch the repo topic to `coworld-complete` after certification passes.
+<!-- COWORLD-REPO-STATUS:END -->
+
+
 Coworld strategy game where players conquer planets and launch ships across
 a tiny star map.
 
