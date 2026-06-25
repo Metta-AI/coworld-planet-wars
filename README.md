@@ -1,5 +1,10 @@
 # Planet Wars
 
+<!-- COWORLD-VERIFY-BADGE:START -->
+![Coworld verify: failed](https://img.shields.io/badge/coworld%20verify-failed-red)
+<!-- COWORLD-VERIFY-BADGE:END -->
+
+
 <!-- COWORLD-REPO-STATUS:START -->
 > [!NOTE]
 > Coworld repo status: **incomplete** (`coworld-incomplete`).
