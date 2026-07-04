@@ -130,6 +130,11 @@ when isMainModule:
         ".bitreplay")
     else:
       ""
+  let expectedPlayers =
+    if config.tokens.len > 0:
+      config.tokens.len
+    else:
+      max(0, config.numAgents)
   runServerLoop(
     config.address,
     config.port,
@@ -137,5 +142,6 @@ when isMainModule:
     config.simConfig,
     runtimeConfig,
     config.tokens,
-    saveReplayPath
+    saveReplayPath,
+    expectedPlayers
   )

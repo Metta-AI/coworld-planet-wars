@@ -18,6 +18,7 @@ const
   PlanetSpacing* = 10
   BaseFps* = 24
   TargetFps* = 60
+  WaitForPlayersTimeoutTicks* = TargetFps * 30
   DefaultMaxTicks* = TargetFps * 60 * 5
   DefaultMaxGames* = 0
   ShipSpeedPixelsPerSecond* = 48
@@ -162,6 +163,9 @@ type
     scoreRevision*: int
     textFont*: PixelFont
     chatMessages*: seq[ChatMessage]
+    waitingForPlayers*: bool
+    expectedPlayers*: int
+    waitTicks*: int
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
@@ -881,6 +885,15 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) {.measure.} =
   ## Advances one deterministic game tick.
   if sim.gameOver:
     return
+  if sim.waitingForPlayers:
+    # The lobby holds the game clock at zero: planets do not grow and
+    # inputs are ignored, so late joiners start on equal footing. The
+    # first simulated tick runs on the frame after the lobby ends.
+    inc sim.waitTicks
+    if sim.players.len >= sim.expectedPlayers or
+        sim.waitTicks >= WaitForPlayersTimeoutTicks:
+      sim.waitingForPlayers = false
+    return
   for playerIndex in 0 ..< sim.players.len:
     let input =
       if playerIndex < inputs.len:
@@ -898,11 +911,15 @@ proc step*(sim: var SimServer, inputs: openArray[PlayerInput]) {.measure.} =
 
 proc initSimServer*(
   seed: int,
-  config = defaultSimConfig()
+  config = defaultSimConfig(),
+  expectedPlayers = 0
 ): SimServer {.measure.} =
-  ## Creates a fresh simulation server.
+  ## Creates a fresh simulation server. A positive expectedPlayers count
+  ## holds the game in a waiting lobby until that many players join.
   config.checkSimConfig()
   result.config = config
+  result.expectedPlayers = expectedPlayers
+  result.waitingForPlayers = expectedPlayers > 0
   result.winnerPlayerId = 0
   result.rng = initRand(seed)
   result.textFont = loadTiny5Font()

@@ -435,7 +435,8 @@ proc runServerLoop*(
   simConfig = defaultSimConfig(),
   runtimeConfig = RuntimeConfig(),
   tokens: seq[string] = @[],
-  saveReplayPath = ""
+  saveReplayPath = "",
+  expectedPlayers = 0
 ) =
   ## Runs the Planet Wars server loop.
   startProfileTrace()
@@ -468,7 +469,7 @@ proc runServerLoop*(
   )
   httpServer.waitUntilReady()
   var
-    sim = initSimServer(seed, simConfig)
+    sim = initSimServer(seed, simConfig, expectedPlayers)
     lastTick = getMonoTime()
     lastScoreRevision = -1
     gamesFinished = 0
@@ -534,6 +535,11 @@ proc runServerLoop*(
             currentMask = appState.inputMasks.getOrDefault(websocket, 0)
             previousMask =
               appState.lastAppliedMasks.getOrDefault(websocket, 0)
+          if sim.waitingForPlayers:
+            # Lobby inputs are neither applied nor recorded, so a mask
+            # held across the start still fires its press edge on the
+            # first simulated tick, live and in replays alike.
+            continue
           inputs[playerIndex] = playerInputFromMasks(
             currentMask,
             previousMask
@@ -549,9 +555,12 @@ proc runServerLoop*(
           globalStates.add(state)
         for websocket in appState.rewardViewers.keys:
           rewardViewers.add(websocket)
-    let wasGameOver = sim.gameOver
+    let
+      wasGameOver = sim.gameOver
+      wasWaiting = sim.waitingForPlayers
     sim.step(inputs)
-    replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+    if not wasWaiting:
+      replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
     let gameFinished = sim.gameOver and not wasGameOver
     let rewardPacket = sim.buildRewardPacket()
     for i in 0 ..< sockets.len:
@@ -609,7 +618,7 @@ proc runServerLoop*(
           runtimeConfig.writeReplay(readFile(saveReplayPath))
       if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
         break
-      sim = initSimServer(seed + gamesFinished, simConfig)
+      sim = initSimServer(seed + gamesFinished, simConfig, expectedPlayers)
       lastScoreRevision = -1
       {.gcsafe.}:
         withLock appState.lock:
