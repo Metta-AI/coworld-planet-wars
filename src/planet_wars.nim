@@ -1,5 +1,5 @@
 import
-  std/json,
+  std/[json, os],
   bitworld/runtime,
   jsony,
   planet_wars/server,
@@ -121,11 +121,21 @@ when isMainModule:
   config.update(runtimeConfig.config)
   config.simConfig.checkSimConfig()
   config.echoStartupConfig()
+  if runtimeConfig.replayMode:
+    runReplayServerLoop(config.address, config.port, runtimeConfig)
+    quit(0)
+  let saveReplayPath =
+    if runtimeConfig.replayUri.len > 0:
+      getTempDir() / ("planet-wars-replay-" & $getCurrentProcessId() &
+        ".bitreplay")
+    else:
+      ""
   runServerLoop(
     config.address,
     config.port,
     config.seed,
     config.simConfig,
     runtimeConfig,
-    config.tokens
+    config.tokens,
+    saveReplayPath
   )

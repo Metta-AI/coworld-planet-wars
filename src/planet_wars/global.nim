@@ -52,6 +52,41 @@ const
   ScorePanelNameGapX = 2
   ScorePanelMaxScoreChars = 16
   PlanetTextMaxChars = 8
+  ReplayCenterBottomLayerId = 4
+  ReplayBottomLeftLayerId = 5
+  ReplayMismatchLayerId = 6
+  ReplayCenterBottomLayerKind = 8
+  ReplayBottomLeftLayerKind = 4
+  ReplayMismatchLayerKind = 5
+  ReplayPanelHeight = 20
+  ReplayScrubberWidth = 240
+  ReplayScrubberHeight = 5
+  ReplayScrubberTrackY = 2
+  ReplayScrubberY = 8
+  TransportX = 2
+  TransportY = 1
+  TransportButtonWidth = 12
+  TransportButtonStride = 14
+  TransportButtonCount = 4
+  TransportRowHeight = 7
+  TransportSpeedY = 8
+  TransportSpeedStride = 18
+  TransportSpeedWidth = 16
+  TransportSpeedLabels = ["1X", "2X", "3X", "4X", "8X", "16X"]
+  TransportSpeedValues = [1, 2, 3, 4, 8, 16]
+  TransportSpeedCommands = ['1', '2', '3', '4', '8', '6']
+  TransportWidth = TransportSpeedStride * TransportSpeedLabels.len
+  TransportHeight = TransportSpeedY + TransportRowHeight
+  ReplayMismatchPadX = 4
+  ReplayMismatchPadY = 3
+  ReplayTickSpriteId = 18600
+  ReplayScrubberSpriteId = 18601
+  ReplayControlsSpriteId = 18602
+  ReplayMismatchSpriteId = 18603
+  ReplayTickObjectId = 4600
+  ReplayScrubberObjectId = 4601
+  ReplayControlsObjectId = 4602
+  ReplayMismatchObjectId = 4603
 
 type
   WorldSpriteObject = object
@@ -81,6 +116,15 @@ type
     mouseLayer*: int
     mouseDown*: bool
     clickPending*: bool
+    mousePressX*: int
+    mousePressY*: int
+    mousePressLayer*: int
+    scrubbingReplay*: bool
+    replaySeekTick*: int
+    replayCommands*: seq[char]
+    replayTickKey: string
+    replayControlsKey: string
+    replayMismatchKey: string
     selectedPlanetId*: int
     scorePanelDigitsDefined: bool
     scorePanelPlayerKeys: seq[PlayerTextSpriteKey]
@@ -98,6 +142,7 @@ proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
   result.mouseLayer = MapLayerId
   result.selectedPlanetId = -1
+  result.replaySeekTick = -1
 
 proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.
@@ -638,7 +683,8 @@ proc addScorePanelPlayerSprites(
 
 proc applyGlobalViewerMessage*(
   state: var GlobalViewerState,
-  message: string
+  message: string,
+  replayControls = false
 ) =
   ## Applies one or more global protocol client messages.
   for item in message.parseSpriteClientMessages():
@@ -656,8 +702,113 @@ proc applyGlobalViewerMessage*(
         state.mouseDown = item.down
         if state.mouseDown:
           state.clickPending = true
-    of SpriteClientChatMessage, SpriteClientInputMessage:
+          state.mousePressX = state.mouseX
+          state.mousePressY = state.mouseY
+          state.mousePressLayer = state.mouseLayer
+        else:
+          state.scrubbingReplay = false
+    of SpriteClientChatMessage:
+      if replayControls:
+        for ch in item.text:
+          state.replayCommands.add(ch)
+    of SpriteClientInputMessage,
+        SpriteClientReadyMessage, SpriteClientDebugSpriteMessage:
       discard
+
+proc replayCommandAt(layer, x, y: int): char =
+  ## Returns the replay transport command under a UI coordinate.
+  if layer != ReplayBottomLeftLayerId:
+    return '\0'
+  let
+    localX = x - TransportX
+    localY = y - TransportY
+  if localX < 0:
+    return '\0'
+  if localY >= 0 and localY < TransportRowHeight:
+    let index = localX div TransportButtonStride
+    if index < 0 or index >= TransportButtonCount:
+      return '\0'
+    if localX - index * TransportButtonStride >= TransportButtonWidth:
+      return '\0'
+    case index
+    of 0: return '<'
+    of 1: return ' '
+    of 2: return 'e'
+    else: return 'r'
+  if localY >= TransportSpeedY and localY < TransportSpeedY +
+      TransportRowHeight:
+    let index = localX div TransportSpeedStride
+    if index < 0 or index >= TransportSpeedCommands.len:
+      return '\0'
+    if localX - index * TransportSpeedStride >= TransportSpeedWidth:
+      return '\0'
+    return TransportSpeedCommands[index]
+  '\0'
+
+proc replayScrubTickAt(
+  layer, x, y, maxTick: int,
+  requireInside = true
+): int =
+  ## Returns the replay tick under the scrubber pointer.
+  if layer != ReplayCenterBottomLayerId or maxTick < 0:
+    return -1
+  let
+    scrubberX = max(0, (WorldWidthPixels - ReplayScrubberWidth) div 2)
+    localX = x - scrubberX
+    localY = y - ReplayScrubberY
+  if requireInside and (
+      localX < 0 or localX >= ReplayScrubberWidth or
+      localY < 0 or localY >= ReplayScrubberHeight
+    ):
+    return -1
+  if ReplayScrubberWidth <= 1:
+    return 0
+  let clampedX = clamp(localX, 0, ReplayScrubberWidth - 1)
+  clamp((clampedX * maxTick) div (ReplayScrubberWidth - 1), 0, maxTick)
+
+proc drainReplayViewerInput*(
+  state: var GlobalViewerState,
+  maxTick: int,
+  seekTicks: var seq[int],
+  commands: var seq[char]
+) =
+  ## Collects pending replay seeks and transport commands from one viewer.
+  state.replaySeekTick = -1
+  if state.clickPending:
+    state.clickPending = false
+    let seekTick = replayScrubTickAt(
+      state.mousePressLayer,
+      state.mousePressX,
+      state.mousePressY,
+      maxTick
+    )
+    if seekTick >= 0:
+      state.scrubbingReplay = true
+      state.replaySeekTick = seekTick
+    else:
+      let command = replayCommandAt(
+        state.mousePressLayer,
+        state.mousePressX,
+        state.mousePressY
+      )
+      if command != '\0':
+        state.replayCommands.add(command)
+  if state.mouseDown and state.scrubbingReplay:
+    let seekTick = replayScrubTickAt(
+      state.mouseLayer,
+      state.mouseX,
+      state.mouseY,
+      maxTick,
+      requireInside = false
+    )
+    if seekTick >= 0:
+      state.replaySeekTick = seekTick
+  if state.replaySeekTick >= 0:
+    seekTicks.add(state.replaySeekTick)
+  state.replaySeekTick = -1
+  for command in state.replayCommands:
+    commands.add(command)
+  state.replayCommands.setLen(0)
 
 proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
@@ -673,7 +824,8 @@ proc applyPlayerViewerMessage*(
       chatText.add(item.text)
     of SpriteClientInputMessage:
       inputMask = item.mask
-    of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage:
+    of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage,
+        SpriteClientReadyMessage, SpriteClientDebugSpriteMessage:
       discard
 
 proc selectPlanetAt(sim: SimServer, worldX, worldY: int): int =
@@ -1350,15 +1502,267 @@ proc buildSpriteProtocolPlayerUpdates*(
       result.addDeleteObject(objectId)
   nextState.objectIds = currentIds
 
+proc blitText(
+  sim: SimServer,
+  target: var RgbaSprite,
+  text: string,
+  x, y: int,
+  color: RgbaColor
+) =
+  ## Blits one Tiny5 text line into a sprite.
+  var dx = x
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    target.blitGlyph(glyph, dx, y, color)
+    dx += sim.textFont.glyphAdvance(ch)
+
+proc buildReplayTickSprite(sim: SimServer, tick: int): RgbaSprite =
+  ## Builds the replay tick counter sprite.
+  let text = "TICK " & $tick
+  result = newRgbaSprite(
+    sim.textFont.textWidth(text) + TextOutlinePad * 2,
+    sim.textFont.lineHeight() + TextOutlinePad * 2
+  )
+  var dx = TextOutlinePad
+  for ch in text:
+    let glyph = sim.textFont.glyphAt(ch)
+    result.blitGlyphOutline(glyph, dx, TextOutlinePad)
+    dx += sim.textFont.glyphAdvance(ch)
+  sim.blitText(result, text, TextOutlinePad, TextOutlinePad, WhiteColor)
+
+proc buildReplayScrubberSprite(tick, maxTick: int): RgbaSprite =
+  ## Builds the compact replay scrubber sprite.
+  result = newRgbaSprite(ReplayScrubberWidth, ReplayScrubberHeight)
+  let
+    track = RgbaColor(r: 90, g: 90, b: 90, a: 255)
+    knob = RgbaColor(r: 255, g: 255, b: 255, a: 255)
+    knobEdge = RgbaColor(r: 180, g: 180, b: 180, a: 255)
+    knobX =
+      if maxTick > 0:
+        clamp(
+          (tick * (ReplayScrubberWidth - 1)) div maxTick,
+          0,
+          ReplayScrubberWidth - 1
+        )
+      else:
+        0
+  for x in 0 ..< ReplayScrubberWidth:
+    result.putRgbaPixel(x, ReplayScrubberTrackY, track)
+  for x in 0 .. knobX:
+    result.putRgbaPixel(x, ReplayScrubberTrackY, knob)
+  for y in 0 ..< ReplayScrubberHeight:
+    result.putRgbaPixel(knobX, y, knob)
+  if knobX > 0:
+    result.putRgbaPixel(knobX - 1, ReplayScrubberTrackY, knobEdge)
+  if knobX < ReplayScrubberWidth - 1:
+    result.putRgbaPixel(knobX + 1, ReplayScrubberTrackY, knobEdge)
+
+proc buildReplayControlsSprite(
+  sim: SimServer,
+  playing: bool,
+  looping: bool,
+  speed: int
+): RgbaSprite =
+  ## Builds the replay transport controls sprite from text buttons.
+  result = newRgbaSprite(TransportWidth, TransportHeight)
+  let
+    bright = RgbaColor(r: 255, g: 255, b: 255, a: 255)
+    dim = RgbaColor(r: 128, g: 128, b: 128, a: 255)
+    buttons = [
+      "<<",
+      if playing: "||" else: "|>",
+      ">|",
+      "R"
+    ]
+  for i, label in buttons:
+    let color =
+      if i == 3:
+        if looping: bright else: dim
+      else:
+        bright
+    sim.blitText(result, label, i * TransportButtonStride, 0, color)
+  for i, label in TransportSpeedLabels:
+    let color =
+      if TransportSpeedValues[i] == speed:
+        bright
+      else:
+        dim
+    sim.blitText(
+      result,
+      label,
+      i * TransportSpeedStride,
+      TransportSpeedY,
+      color
+    )
+
+proc addReplayControls(
+  sim: SimServer,
+  packet: var seq[uint8],
+  currentIds: var seq[int],
+  nextState: var GlobalViewerState,
+  replayTick,
+  replaySpeed,
+  replayMaxTick: int,
+  playing,
+  looping: bool,
+  mismatchTick: int
+) =
+  ## Adds the replay timing controls for one replay viewer frame.
+  packet.addLayer(
+    ReplayCenterBottomLayerId,
+    ReplayCenterBottomLayerKind,
+    UiLayerFlag
+  )
+  packet.addViewport(
+    ReplayCenterBottomLayerId,
+    WorldWidthPixels,
+    ReplayPanelHeight
+  )
+  packet.addLayer(
+    ReplayBottomLeftLayerId,
+    ReplayBottomLeftLayerKind,
+    UiLayerFlag
+  )
+  packet.addViewport(
+    ReplayBottomLeftLayerId,
+    WorldWidthPixels,
+    ReplayPanelHeight
+  )
+  let
+    controlTick = max(0, replayTick)
+    controlMaxTick = max(controlTick, replayMaxTick)
+    tickKey = $controlTick & "/" & $controlMaxTick
+    controlsKey = $playing & "/" & $looping & "/" & $replaySpeed
+  if nextState.replayTickKey != tickKey:
+    let
+      tickText = sim.buildReplayTickSprite(controlTick)
+      scrubber = buildReplayScrubberSprite(controlTick, controlMaxTick)
+    packet.addSprite(
+      ReplayTickSpriteId,
+      tickText.width,
+      tickText.height,
+      tickText.pixels,
+      "replay tick"
+    )
+    packet.addSprite(
+      ReplayScrubberSpriteId,
+      scrubber.width,
+      scrubber.height,
+      scrubber.pixels,
+      "replay scrubber"
+    )
+    nextState.replayTickKey = tickKey
+  if nextState.replayControlsKey != controlsKey:
+    let controls = sim.buildReplayControlsSprite(
+      playing,
+      looping,
+      replaySpeed
+    )
+    packet.addSprite(
+      ReplayControlsSpriteId,
+      controls.width,
+      controls.height,
+      controls.pixels,
+      "replay controls"
+    )
+    nextState.replayControlsKey = controlsKey
+  let tickTextWidth =
+    sim.textFont.textWidth("TICK " & $controlTick) + TextOutlinePad * 2
+  packet.addObject(
+    ReplayTickObjectId,
+    max(0, (WorldWidthPixels - tickTextWidth) div 2),
+    0,
+    0,
+    ReplayCenterBottomLayerId,
+    ReplayTickSpriteId
+  )
+  currentIds.add(ReplayTickObjectId)
+  packet.addObject(
+    ReplayScrubberObjectId,
+    max(0, (WorldWidthPixels - ReplayScrubberWidth) div 2),
+    ReplayScrubberY,
+    0,
+    ReplayCenterBottomLayerId,
+    ReplayScrubberSpriteId
+  )
+  currentIds.add(ReplayScrubberObjectId)
+  packet.addObject(
+    ReplayControlsObjectId,
+    TransportX,
+    TransportY,
+    0,
+    ReplayBottomLeftLayerId,
+    ReplayControlsSpriteId
+  )
+  currentIds.add(ReplayControlsObjectId)
+  if mismatchTick >= 0:
+    let mismatchKey = $mismatchTick
+    packet.addLayer(
+      ReplayMismatchLayerId,
+      ReplayMismatchLayerKind,
+      UiLayerFlag
+    )
+    if nextState.replayMismatchKey != mismatchKey:
+      let
+        label = "HASH MISMATCH AT TICK " & $mismatchTick
+        textWidth = sim.textFont.textWidth(label)
+      var warning = newRgbaSprite(
+        textWidth + ReplayMismatchPadX * 2,
+        sim.textFont.lineHeight() + ReplayMismatchPadY * 2
+      )
+      warning.fillRect(
+        0,
+        0,
+        warning.width,
+        warning.height,
+        RgbaColor(r: 220, g: 20, b: 20, a: 255)
+      )
+      sim.blitText(
+        warning,
+        label,
+        ReplayMismatchPadX,
+        ReplayMismatchPadY,
+        WhiteColor
+      )
+      packet.addViewport(
+        ReplayMismatchLayerId,
+        warning.width,
+        warning.height
+      )
+      packet.addSprite(
+        ReplayMismatchSpriteId,
+        warning.width,
+        warning.height,
+        warning.pixels,
+        "replay mismatch"
+      )
+      nextState.replayMismatchKey = mismatchKey
+    packet.addObject(
+      ReplayMismatchObjectId,
+      0,
+      0,
+      0,
+      ReplayMismatchLayerId,
+      ReplayMismatchSpriteId
+    )
+    currentIds.add(ReplayMismatchObjectId)
+
 proc buildSpriteProtocolUpdates*(
   sim: SimServer,
   state: GlobalViewerState,
-  nextState: var GlobalViewerState
+  nextState: var GlobalViewerState,
+  replayControls = false,
+  replayTick = -1,
+  replaySpeed = 1,
+  replayMaxTick = -1,
+  replayPlaying = false,
+  replayLooping = false,
+  replayMismatchTick = -1
 ): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
   nextState = state
-  if nextState.clickPending:
+  if nextState.clickPending and not replayControls:
     if nextState.mouseLayer == MapLayerId:
       nextState.selectedPlanetId =
         sim.selectPlanetAt(nextState.mouseX, nextState.mouseY)
@@ -1385,6 +1789,18 @@ proc buildSpriteProtocolUpdates*(
     WorldHeightPixels
   )
   sim.addGlobalScorePanel(result, currentIds, state, nextState)
+  if replayControls:
+    sim.addReplayControls(
+      result,
+      currentIds,
+      nextState,
+      replayTick,
+      replaySpeed,
+      replayMaxTick,
+      replayPlaying,
+      replayLooping,
+      replayMismatchTick
+    )
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)

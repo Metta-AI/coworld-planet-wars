@@ -56,6 +56,7 @@ const
   OriginColor* = RgbaColor(r: 84'u8, g: 244'u8, b: 232'u8, a: 255'u8)
   ScoreColor* = RgbaColor(r: 248'u8, g: 250'u8, b: 255'u8, a: 255'u8)
   BlackColor* = RgbaColor(r: 0'u8, g: 0'u8, b: 0'u8, a: 255'u8)
+  WhiteColor* = RgbaColor(r: 255'u8, g: 255'u8, b: 255'u8, a: 255'u8)
   ChatBubbleTicks* = TargetFps * 5
   StarColors* = [
     RgbaColor(r: 168'u8, g: 211'u8, b: 255'u8, a: 255'u8),
@@ -909,6 +910,54 @@ proc initSimServer*(
   result.generatePlanets()
   result.generateStars()
   result.markScoresChanged()
+
+proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
+  ## Removes one player from the simulation, compacting indices.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.removePlayerById(sim.players[playerIndex].id)
+  sim.players.delete(playerIndex)
+
+proc mixHash(hash: var uint64, value: uint64) =
+  ## Mixes one value into a running FNV-1a style hash.
+  hash = (hash xor value) * 1099511628211'u64
+
+proc mixHashInt(hash: var uint64, value: int) =
+  ## Mixes one integer into a running hash.
+  hash.mixHash(cast[uint64](int64(value)))
+
+proc gameHash*(sim: SimServer): uint64 =
+  ## Returns a deterministic hash of gameplay state.
+  result = 14695981039346656037'u64
+  result.mixHashInt(sim.tickCount)
+  result.mixHashInt(sim.scoreTicks)
+  result.mixHashInt(ord(sim.gameOver))
+  result.mixHashInt(sim.winnerPlayerId)
+  result.mixHashInt(sim.maxActiveOwnerCount)
+  result.mixHashInt(sim.nextPlayerId)
+  result.mixHashInt(sim.players.len)
+  for player in sim.players:
+    result.mixHashInt(player.id)
+    result.mixHashInt(player.score)
+    result.mixHashInt(player.selectedPlanet)
+    result.mixHashInt(player.originPlanet)
+    result.mixHashInt(player.sendCooldown)
+    result.mixHashInt(player.sendHoldTicks)
+    result.mixHashInt(player.cursorX)
+    result.mixHashInt(player.cursorY)
+    result.mixHashInt(player.cursorVelX)
+    result.mixHashInt(player.cursorVelY)
+    result.mixHashInt(player.cursorBoostTicks)
+  result.mixHashInt(sim.planets.len)
+  for planet in sim.planets:
+    result.mixHashInt(planet.ownerId)
+    result.mixHashInt(planet.ships)
+    result.mixHashInt(planet.growthTicks)
+  result.mixHashInt(sim.ships.len)
+  for ship in sim.ships:
+    result.mixHashInt(ship.ownerId)
+    result.mixHashInt(ship.targetPlanet)
+    result.mixHashInt(ship.progress)
 
 proc playerScoresJson*(sim: SimServer): string {.measure.} =
   ## Builds the current per-player score JSON.
