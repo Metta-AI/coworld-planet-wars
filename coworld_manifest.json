@@ -16,13 +16,17 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
+          "minItems": 8,
+          "maxItems": 8,
           "items": {
             "type": "string",
             "minLength": 0
           },
           "default": [
+            "",
+            "",
+            "",
+            "",
             "",
             "",
             "",
@@ -58,8 +62,8 @@
           "description": "Player seat count used by hosted league seating.",
           "type": "integer",
           "minimum": 1,
-          "maximum": 4,
-          "default": 4
+          "maximum": 8,
+          "default": 8
         }
       }
     },
@@ -211,9 +215,9 @@
         "planetCount": 47,
         "maxTicks": 18000,
         "maxGames": 1,
-        "num_agents": 4
+        "num_agents": 8
       },
-      "description": "One bounded four-seat Planet Wars match, used for hosted league rounds."
+      "description": "One bounded eight-seat Planet Wars match, used for hosted league rounds."
     },
     {
       "id": "smoke",
@@ -235,6 +239,18 @@
       "maxGames": 1
     },
     "players": [
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
       {
         "player_id": "skurge"
       },
