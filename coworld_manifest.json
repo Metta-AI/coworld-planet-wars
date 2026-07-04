@@ -16,13 +16,22 @@
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
           "type": "array",
-          "minItems": 0,
-          "maxItems": 16,
+          "minItems": 8,
+          "maxItems": 8,
           "items": {
             "type": "string",
             "minLength": 0
           },
-          "default": []
+          "default": [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ]
         },
         "seed": {
           "description": "Random seed.",
@@ -48,6 +57,13 @@
           "type": "integer",
           "minimum": 0,
           "default": 0
+        },
+        "num_agents": {
+          "description": "Player seat count used by hosted league seating.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 8
         }
       }
     },
@@ -147,7 +163,7 @@
     },
     "runnable": {
       "type": "game",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/games/planet-wars:latest",
+      "image": "{{GAME_IMAGE}}",
       "run": ["/bin/planet_wars"]
     }
   },
@@ -157,8 +173,18 @@
       "type": "player",
       "name": "Skurge",
       "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets.",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/players/skurge:latest",
+      "image": "{{SKURGE_IMAGE}}",
       "run": ["/bin/skurge"]
+    }
+  ],
+  "commissioner": [
+    {
+      "id": "default-commissioner",
+      "name": "Default Commissioner",
+      "type": "commissioner",
+      "description": "Game-agnostic round-robin commissioner with mean-score rankings and hourly Planet Wars rounds.",
+      "source_url": "https://github.com/Metta-AI/commissioners/tree/fa8ac7cb2bc6fd54c5675c7993919afabebcf4ba/commissioners/ruleset_strategy_commissioner",
+      "image": "{{COMMISSIONER_IMAGE}}"
     }
   ],
   "reporter": [
@@ -167,7 +193,7 @@
       "type": "reporter",
       "name": "Default Reporter",
       "description": "Default Coworld reporter for generic episode artifacts.",
-      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
+      "image": "{{REPORTER_IMAGE}}"
     }
   ],
   "grader": [
@@ -176,11 +202,23 @@
       "name": "BitWorld Score Grader",
       "type": "grader",
       "description": "Generic BitWorld grader that scores episode interest from score spread and game-specific activity signals.",
-      "source_url": "https://github.com/Metta-AI/coworld-planet-wars/tree/master/grader/graders/bitworld_score/bitworld_score_grader",
+      "source_url": "https://github.com/Metta-AI/coworld-planet-wars/tree/f31f9e2a6a84100059f8dd7e1248d88fbbb97b2b/grader/graders/bitworld_score/bitworld_score_grader",
       "image": "ghcr.io/metta-ai/coworld-planet-wars-grader:latest"
     }
   ],
   "variants": [
+    {
+      "id": "league",
+      "name": "League",
+      "game_config": {
+        "seed": 108519,
+        "planetCount": 47,
+        "maxTicks": 18000,
+        "maxGames": 1,
+        "num_agents": 8
+      },
+      "description": "One bounded eight-seat Planet Wars match, used for hosted league rounds."
+    },
     {
       "id": "smoke",
       "name": "Smoke",
@@ -188,7 +226,7 @@
         "seed": 108519,
         "planetCount": 47,
         "maxTicks": 1200,
-        "maxGames": 0
+        "maxGames": 1
       },
       "description": "Short deterministic Planet Wars configuration used for manifest checks."
     }
@@ -198,9 +236,27 @@
       "seed": 108519,
       "planetCount": 47,
       "maxTicks": 1200,
-      "maxGames": 0
+      "maxGames": 1
     },
     "players": [
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
+      {
+        "player_id": "skurge"
+      },
       {
         "player_id": "skurge"
       },

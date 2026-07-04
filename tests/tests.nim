@@ -2,6 +2,7 @@ import
   std/[json, os],
   bitworld/spriteprotocol,
   planet_wars/global,
+  planet_wars/replays,
   planet_wars/sim
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
@@ -249,3 +250,124 @@ for _ in 0 ..< TargetFps:
   speedGame.applyInput(speedPlayerIndex, PlayerInput(right: true))
 doAssert speedGame.players[speedPlayerIndex].cursorVelX > CursorMaxSpeed
 doAssert speedGame.players[speedPlayerIndex].cursorVelX <= CursorBoostMaxSpeed
+
+proc scriptedMask(playerIndex, tick: int): uint8 =
+  ## Returns a deterministic scripted input mask for replay tests.
+  if playerIndex == 0:
+    if tick mod 60 < 30:
+      result = ButtonRight or ButtonA
+    elif tick mod 60 < 45:
+      result = ButtonDown or ButtonB
+  else:
+    if tick mod 40 < 20:
+      result = ButtonLeft
+    elif tick mod 40 < 30:
+      result = ButtonUp or ButtonA
+
+echo "Testing replay records and plays back deterministically"
+const ReplayTestTicks = 200
+var replayConfig = defaultSimConfig()
+replayConfig.planetCount = 6
+replayConfig.maxTicks = ReplayTestTicks
+replayConfig.maxGames = 1
+let replayTestSeed = 424242
+var recordedGame = initSimServer(replayTestSeed, replayConfig)
+let replayPath = getTempDir() / "planet-wars-test.bitreplay"
+var writer = openReplayWriter(
+  replayPath,
+  $(%*{
+    "seed": replayTestSeed,
+    "planetCount": replayConfig.planetCount,
+    "maxTicks": replayConfig.maxTicks,
+    "maxGames": replayConfig.maxGames,
+    "tokenCount": 0
+  })
+)
+doAssert writer.enabled
+var appliedMasks = [0'u8, 0'u8]
+for playerIndex in 0 ..< 2:
+  let joinedIndex = recordedGame.addPlayer("bot" & $playerIndex)
+  doAssert joinedIndex == playerIndex
+  writer.writeJoin(
+    tickTime(recordedGame.tickCount),
+    playerIndex,
+    "bot" & $playerIndex,
+    -1,
+    ""
+  )
+  while writer.lastMasks.len < recordedGame.players.len:
+    writer.lastMasks.add(0)
+writer.writeChat(tickTime(recordedGame.tickCount), 0, "glhf")
+recordedGame.addChatMessage(0, "glhf")
+while not recordedGame.gameOver:
+  var inputs = newSeq[PlayerInput](recordedGame.players.len)
+  for playerIndex in 0 ..< recordedGame.players.len:
+    let mask = scriptedMask(playerIndex, recordedGame.tickCount)
+    inputs[playerIndex] = playerInputFromMasks(
+      mask,
+      appliedMasks[playerIndex]
+    )
+    appliedMasks[playerIndex] = mask
+    writer.writeInputMaskChange(
+      tickTime(recordedGame.tickCount),
+      playerIndex,
+      mask
+    )
+  recordedGame.step(inputs)
+  writer.writeHash(uint32(recordedGame.tickCount), recordedGame.gameHash())
+writer.closeReplayWriter()
+doAssert recordedGame.tickCount == ReplayTestTicks
+let recordedFinalHash = recordedGame.gameHash()
+
+let replayData = loadReplay(replayPath)
+let replaySettings = replayData.replaySimSettings()
+doAssert replaySettings.seed == replayTestSeed
+doAssert replaySettings.config.planetCount == replayConfig.planetCount
+doAssert replaySettings.config.maxTicks == replayConfig.maxTicks
+var
+  playbackGame = initSimServer(replaySettings.seed, replaySettings.config)
+  playback = initReplayPlayer(replayData)
+doAssert playback.replayMaxTick() == ReplayTestTicks
+while playback.playing:
+  playback.stepReplay(playbackGame)
+doAssert not playback.hashValidationFailed
+doAssert playbackGame.tickCount == ReplayTestTicks
+doAssert playbackGame.gameHash() == recordedFinalHash
+doAssert playbackGame.chatMessages.len == recordedGame.chatMessages.len
+doAssert playbackGame.chatMessages[0].text == "glhf"
+
+echo "Testing replay keyframes seek to exact ticks"
+var
+  seekGame = initSimServer(replaySettings.seed, replaySettings.config)
+  seeker = initReplayPlayer(replayData)
+seeker.buildReplayKeyframes(replaySettings.seed, replaySettings.config)
+doAssert seeker.keyframes.len == ReplayTestTicks div ReplayKeyframeTicks + 1
+var
+  referenceGame = initSimServer(replaySettings.seed, replaySettings.config)
+  reference = initReplayPlayer(replayData)
+while referenceGame.tickCount < 150:
+  reference.stepReplay(referenceGame)
+seeker.applyReplaySeek(seekGame, 150)
+doAssert not seeker.playing
+doAssert seekGame.tickCount == 150
+doAssert seekGame.gameHash() == referenceGame.gameHash()
+seeker.applyReplaySeek(seekGame, 42)
+doAssert seekGame.tickCount == 42
+seeker.applyReplaySeek(seekGame, ReplayTestTicks)
+doAssert seekGame.tickCount == ReplayTestTicks
+doAssert seekGame.gameHash() == recordedFinalHash
+
+echo "Testing replay transport commands"
+seeker.applyReplayCommand(seekGame, ' ')
+doAssert seeker.playing
+seeker.applyReplayCommand(seekGame, ' ')
+doAssert not seeker.playing
+seeker.applyReplayCommand(seekGame, '8')
+doAssert seeker.replaySpeed() == 8
+seeker.applyReplayCommand(seekGame, '-')
+doAssert seeker.replaySpeed() == 4
+seeker.applyReplayCommand(seekGame, '<')
+doAssert seekGame.tickCount == 0
+seeker.applyReplayCommand(seekGame, 'e')
+doAssert seekGame.tickCount == ReplayTestTicks
+removeFile(replayPath)
