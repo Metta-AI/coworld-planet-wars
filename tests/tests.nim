@@ -251,6 +251,46 @@ for _ in 0 ..< TargetFps:
 doAssert speedGame.players[speedPlayerIndex].cursorVelX > CursorMaxSpeed
 doAssert speedGame.players[speedPlayerIndex].cursorVelX <= CursorBoostMaxSpeed
 
+echo "Testing waiting lobby holds the game until everyone joins"
+var lobbyConfig = defaultSimConfig()
+lobbyConfig.planetCount = 6
+lobbyConfig.maxTicks = 10
+var lobbyGame = initSimServer(321, lobbyConfig, expectedPlayers = 2)
+doAssert lobbyGame.waitingForPlayers
+for _ in 0 ..< 5:
+  lobbyGame.step([PlayerInput(right: true, attackPressed: true)])
+doAssert lobbyGame.waitingForPlayers
+doAssert lobbyGame.tickCount == 0
+let lobbyFirstIndex = lobbyGame.addPlayer("early")
+lobbyGame.step([])
+doAssert lobbyGame.waitingForPlayers
+doAssert lobbyGame.tickCount == 0
+doAssert lobbyGame.planets[lobbyGame.players[lobbyFirstIndex].originPlanet].ships == 10
+discard lobbyGame.addPlayer("late")
+lobbyGame.step([])
+doAssert not lobbyGame.waitingForPlayers
+doAssert lobbyGame.tickCount == 0
+lobbyGame.step([])
+doAssert lobbyGame.tickCount == 1
+var lobbyWaitingState: GlobalViewerState
+var lobbyWaitingNext: GlobalViewerState
+var lobbyView = initSimServer(322, lobbyConfig, expectedPlayers = 2)
+let lobbyPacket = lobbyView.buildSpriteProtocolUpdates(
+  lobbyWaitingState,
+  lobbyWaitingNext
+)
+doAssert 4003 in lobbyPacket.spritePacketObjectIds()
+
+echo "Testing waiting lobby starts after the timeout"
+var timeoutGame = initSimServer(323, lobbyConfig, expectedPlayers = 2)
+discard timeoutGame.addPlayer("only")
+for _ in 0 ..< WaitForPlayersTimeoutTicks:
+  timeoutGame.step([])
+doAssert not timeoutGame.waitingForPlayers
+doAssert timeoutGame.tickCount == 0
+timeoutGame.step([])
+doAssert timeoutGame.tickCount == 1
+
 proc scriptedMask(playerIndex, tick: int): uint8 =
   ## Returns a deterministic scripted input mask for replay tests.
   if playerIndex == 0:
@@ -271,7 +311,13 @@ replayConfig.planetCount = 6
 replayConfig.maxTicks = ReplayTestTicks
 replayConfig.maxGames = 1
 let replayTestSeed = 424242
-var recordedGame = initSimServer(replayTestSeed, replayConfig)
+var recordedGame = initSimServer(
+  replayTestSeed,
+  replayConfig,
+  expectedPlayers = 2
+)
+recordedGame.step([])
+doAssert recordedGame.waitingForPlayers
 let replayPath = getTempDir() / "planet-wars-test.bitreplay"
 var writer = openReplayWriter(
   replayPath,
@@ -299,6 +345,9 @@ for playerIndex in 0 ..< 2:
     writer.lastMasks.add(0)
 writer.writeChat(tickTime(recordedGame.tickCount), 0, "glhf")
 recordedGame.addChatMessage(0, "glhf")
+recordedGame.step([])
+doAssert not recordedGame.waitingForPlayers
+doAssert recordedGame.tickCount == 0
 while not recordedGame.gameOver:
   var inputs = newSeq[PlayerInput](recordedGame.players.len)
   for playerIndex in 0 ..< recordedGame.players.len:

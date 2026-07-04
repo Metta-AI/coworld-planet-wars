@@ -13,6 +13,7 @@ const
   PlanetTextDigitSpriteBase = 10000
   HudSpriteId = 18000
   WaitingSpriteId = 18002
+  InterstitialSpriteId = 18003
   ChatSpriteBase = 18010
   PlayerNameSpriteBase = 18100
   ScorePanelDigitSpriteBase = 18300
@@ -31,6 +32,7 @@ const
   ChatBubbleZBase = WorldHeightPixels * 5
   HudObjectId = 4000
   WaitingObjectId = 4002
+  InterstitialObjectId = 4003
   ChatObjectBase = 4010
   ScorePanelChipObjectBase = 14000
   ScorePanelDigitObjectBase = 15000
@@ -125,6 +127,7 @@ type
     replayTickKey: string
     replayControlsKey: string
     replayMismatchKey: string
+    interstitialKey: string
     selectedPlanetId*: int
     scorePanelDigitsDefined: bool
     scorePanelPlayerKeys: seq[PlayerTextSpriteKey]
@@ -137,6 +140,7 @@ type
     planetTextDigitsDefined: bool
     waitingSpriteDefined: bool
     hudText: string
+    interstitialKey: string
 
 proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
@@ -1367,6 +1371,45 @@ proc addWaitingText(
   )
   currentIds.add(WaitingObjectId)
 
+proc addWaitingForPlayersOverlay(
+  sim: SimServer,
+  packet: var seq[uint8],
+  interstitialKey: var string,
+  currentIds: var seq[int],
+  viewportWidth,
+  viewportHeight: int
+) {.measure.} =
+  ## Adds the centered waiting-for-players interstitial overlay.
+  let
+    title = "WAITING FOR PLAYERS"
+    countLine = $sim.players.len & " OF " & $sim.expectedPlayers & " JOINED"
+    lineHeight = sim.textFont.lineHeight()
+    width = max(
+      sim.textFont.textWidth(title),
+      sim.textFont.textWidth(countLine)
+    ) + TextOutlinePad * 2
+    height = max(1, 2 * lineHeight - sim.textFont.spacing) +
+      TextOutlinePad * 2
+  if interstitialKey != countLine:
+    let text = sim.buildTextSprite([title, countLine], ScoreColor, true)
+    packet.addSprite(
+      InterstitialSpriteId,
+      text.width,
+      text.height,
+      text.pixels,
+      "waiting for players"
+    )
+    interstitialKey = countLine
+  packet.addObject(
+    InterstitialObjectId,
+    max(0, (viewportWidth - width) div 2),
+    max(0, (viewportHeight - height) div 2),
+    high(int16),
+    MapLayerId,
+    InterstitialSpriteId
+  )
+  currentIds.add(InterstitialObjectId)
+
 proc addGlobalScorePanel(
   sim: SimServer,
   packet: var seq[uint8],
@@ -1460,11 +1503,20 @@ proc buildSpriteProtocolPlayerUpdates*(
   result.addPlayerSpriteDefinitions(nextState.playerSpriteKeys, sim)
   var currentIds: seq[int] = @[]
   if playerIndex < 0 or playerIndex >= sim.players.len:
-    sim.addWaitingText(
-      result,
-      nextState.waitingSpriteDefined,
-      currentIds
-    )
+    if sim.waitingForPlayers:
+      sim.addWaitingForPlayersOverlay(
+        result,
+        nextState.interstitialKey,
+        currentIds,
+        PlayerViewportWidth,
+        PlayerViewportHeight
+      )
+    else:
+      sim.addWaitingText(
+        result,
+        nextState.waitingSpriteDefined,
+        currentIds
+      )
   else:
     var ownedSim = sim
     ownedSim.ensureSelection(playerIndex)
@@ -1497,6 +1549,14 @@ proc buildSpriteProtocolPlayerUpdates*(
       currentIds,
       playerIndex
     )
+    if sim.waitingForPlayers:
+      sim.addWaitingForPlayersOverlay(
+        result,
+        nextState.interstitialKey,
+        currentIds,
+        PlayerViewportWidth,
+        PlayerViewportHeight
+      )
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
@@ -1789,6 +1849,14 @@ proc buildSpriteProtocolUpdates*(
     WorldHeightPixels
   )
   sim.addGlobalScorePanel(result, currentIds, state, nextState)
+  if sim.waitingForPlayers:
+    sim.addWaitingForPlayersOverlay(
+      result,
+      nextState.interstitialKey,
+      currentIds,
+      WorldWidthPixels,
+      WorldHeightPixels
+    )
   if replayControls:
     sim.addReplayControls(
       result,
