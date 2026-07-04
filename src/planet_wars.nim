@@ -12,6 +12,7 @@ type
     seed: int
     simConfig: SimConfig
     tokens: seq[string]
+    numAgents: int
 
 proc readConfigInt(node: JsonNode, name: string, value: var int) =
   ## Reads one optional integer config field.
@@ -52,7 +53,8 @@ proc isKnownConfigField(name: string): bool =
       "planetCount",
       "maxTicks",
       "maxGames",
-      "tokens":
+      "tokens",
+      "num_agents":
     true
   else:
     false
@@ -86,6 +88,7 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigInt("maxTicks", config.simConfig.maxTicks)
   node.readConfigInt("maxGames", config.simConfig.maxGames)
   node.readConfigStrings("tokens", config.tokens)
+  node.readConfigInt("num_agents", config.numAgents)
 
 proc limitText(value: int): string =
   ## Returns a readable text value for a numeric limit.
@@ -100,6 +103,7 @@ proc echoStartupConfig(config: RunConfig) =
     " port=", config.port,
     " seed=", config.seed,
     " tokens=", config.tokens.len,
+    " numAgents=", config.numAgents,
     " planetCount=", config.simConfig.planetCount,
     " maxTicks=", config.simConfig.maxTicks.limitText(),
     " maxGames=", config.simConfig.maxGames.limitText()
