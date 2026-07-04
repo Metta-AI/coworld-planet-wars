@@ -4,3 +4,4 @@ nimcache
 out
 tmp
 *.tmp
+nim.cfg
