@@ -53,7 +53,6 @@ RUN apt-get update && \
 
 WORKDIR /workspace/coworld-planet-wars
 COPY --from=build /bin/planet_wars /bin/planet_wars
-COPY coworld_manifest.json .
 
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
