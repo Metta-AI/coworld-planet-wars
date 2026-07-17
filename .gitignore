@@ -1,6 +1,7 @@
 .DS_Store
 nimcache/
 out/
+dist/
 /planet_wars
 /players/skurge/skurge
 nim.cfg

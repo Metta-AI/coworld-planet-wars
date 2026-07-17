@@ -1,0 +1,27 @@
+services:
+  game:
+    image: coworld-planet-wars-game:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+  skurge:
+    image: coworld-planet-wars-skurge:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: players/skurge/Dockerfile
+      network: host
+  commissioner:
+    image: coworld-planet-wars-commissioner:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: commissioner/Dockerfile
+  grader:
+    image: coworld-planet-wars-grader:latest
+    platform: linux/amd64
+    build:
+      context: grader
+      dockerfile: graders/bitworld_score/bitworld_score_grader/Dockerfile

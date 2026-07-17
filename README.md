@@ -1,27 +1,17 @@
 # Planet Wars
 
-<!-- COWORLD-VERIFY-BADGE:START -->
-![Coworld verify: failed](https://img.shields.io/badge/coworld%20verify-failed-red)
-<!-- COWORLD-VERIFY-BADGE:END -->
-
-
-<!-- COWORLD-REPO-STATUS:START -->
-> [!NOTE]
-> Coworld repo status: **incomplete** (`coworld-incomplete`).
-> Canonical repository: `Metta-AI/coworld-planet-wars`.
-> Manifest path: `coworld_manifest.json`.
-> Build path: `Dockerfile`
-> Certification: blocked until `uv run coworld certify coworld_manifest.json` passes and the result is recorded.
->
-> Missing pieces:
-> - [ ] Validate the root concrete manifest against the current Coworld schema.
-> - [ ] Run `uv run coworld certify coworld_manifest.json` with the bundled players.
-> - [ ] Switch the repo topic to `coworld-complete` after certification passes.
-<!-- COWORLD-REPO-STATUS:END -->
-
-
 Coworld strategy game where players conquer planets and launch ships across
 a tiny star map.
+
+## Coworld package
+
+This repository owns the Coworld manifest template and every image build declared by it:
+
+```bash
+coworld build --version 0.1.4
+coworld certify dist/coworld_manifest.json
+coworld upload-coworld dist/coworld_manifest.json
+```
 
 ## Running
 
