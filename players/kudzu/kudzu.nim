@@ -41,8 +41,28 @@ const
   # Estimated ticks per grown ship at 60 fps (small/medium/large), the
   # midpoints of the server's randomized growth intervals.
   GrowthIntervalTicks = [120, 90, 60]
-  EnemyDistancePenalty = 2
   MissionTimeoutTicks = TargetFps * 8
+  OriginAvoidTicks = TargetFps * 15
+  # Losing this many ships beyond our own sends within the loss window
+  # means the planet is being drained by enemy fire (growth drift alone
+  # stays smaller); contested planets are banned as origins for longer.
+  # Losses are accumulated across sightings so both a big gap discovered
+  # after an absence and gradual 1-by-1 draining in plain view trigger.
+  ContestedLossShips = 3
+  ContestedLossWindowTicks = TargetFps * 5
+  ContestedAvoidTicks = TargetFps * 30
+  # Consecutive missions from one origin that finish without capturing
+  # anything before the origin is written off as contested. Outcome-based
+  # and immune to ship-accounting drift: our own send mirror overestimates
+  # spending while an enemy stream throttles the origin, which masks the
+  # enemy drain from loss detection entirely.
+  MaxOriginFailStreak = 2
+  # Finish the kill: when the target is this close to flipping, keep
+  # the burst going instead of abandoning one ship short. Bounded by a
+  # total mission time so a regrowing enemy cannot extend us forever.
+  FinishKillShips = 3
+  FinishKillExtendTicks = TargetFps div 2
+  MaxMissionTicks = TargetFps * 25
   # Flat score bonus per planet size (small/medium/large). Large planets
   # grow ships ~2x faster than small ones, but planet count compounds
   # faster than growth, so the bonus is bounded: a large planet is only
@@ -120,6 +140,10 @@ type
     objects: seq[ObjectState]
     knownPlanets: seq[PlanetSight]
     spentShips: seq[int]   ## Ships sent from each planet since last sighting.
+    originAvoidUntil: seq[int]  ## Tick until a planet is banned as origin.
+    lossAccum: seq[int]    ## Unexplained ship losses in the recent window.
+    lossTick: seq[int]     ## Tick of the last unexplained loss per planet.
+    originFailStreak: seq[int]  ## Consecutive captureless missions per origin.
     cameraX: int
     cameraY: int
     frameTick: int
@@ -201,6 +225,10 @@ proc resetGameState(bot: var Bot) =
     item.present = false
   bot.knownPlanets.setLen(0)
   bot.spentShips.setLen(0)
+  bot.originAvoidUntil.setLen(0)
+  bot.lossAccum.setLen(0)
+  bot.lossTick.setLen(0)
+  bot.originFailStreak.setLen(0)
   bot.frameTick = 0
   bot.ownPlayerId = -1
   bot.lastSelectedId = -1
@@ -345,37 +373,79 @@ proc visiblePlanets(bot: Bot): seq[PlanetSight] =
     if planet.found:
       result.add(planet)
 
+proc estimatedShips(bot: Bot, planet: PlanetSight): int =
+  ## Estimates one remembered planet's current ship count: owned planets
+  ## grow while out of view, and ships we launched from an origin are
+  ## deducted until the next sighting.
+  result = planet.ships
+  if result < 0:
+    return
+  if planet.ownerId != 0:
+    let elapsed = max(0, bot.frameTick - planet.seenTick)
+    result += elapsed div GrowthIntervalTicks[clamp(planet.sizeOrd, 0, 2)]
+  if planet.id < bot.spentShips.len:
+    result = max(0, result - bot.spentShips[planet.id])
+
 proc rememberPlanets(bot: var Bot, planets: openArray[PlanetSight]) =
   ## Updates remembered planet sightings from the current viewport.
   if bot.knownPlanets.len <= MaxPlanetCount:
     bot.knownPlanets.setLen(MaxPlanetCount + 1)
   if bot.spentShips.len <= MaxPlanetCount:
     bot.spentShips.setLen(MaxPlanetCount + 1)
+  if bot.originAvoidUntil.len <= MaxPlanetCount:
+    bot.originAvoidUntil.setLen(MaxPlanetCount + 1)
+  if bot.lossAccum.len <= MaxPlanetCount:
+    bot.lossAccum.setLen(MaxPlanetCount + 1)
+  if bot.lossTick.len <= MaxPlanetCount:
+    bot.lossTick.setLen(MaxPlanetCount + 1)
+  if bot.originFailStreak.len <= MaxPlanetCount:
+    bot.originFailStreak.setLen(MaxPlanetCount + 1)
   for planet in planets:
     if planet.id >= 0 and planet.id < bot.knownPlanets.len:
+      # Contested-origin detection, before overwriting memory: ships
+      # lost beyond the forward estimate (growth minus our own sends)
+      # can only be enemy fire. Losses accumulate over a short window,
+      # so gradual 1-by-1 draining in plain view triggers just like a
+      # big gap discovered after an absence. Contested planets are
+      # useless origins — missions from them keep getting drained
+      # mid-send — so ban them for a while and settle from elsewhere.
+      let previous = bot.knownPlanets[planet.id]
+      if planet.ships >= 0 and previous.found and previous.ships >= 0 and
+          planet.ownerId == bot.ownPlayerId and
+          previous.ownerId == planet.ownerId:
+        let loss = bot.estimatedShips(previous) - planet.ships
+        if loss > 0:
+          if bot.frameTick - bot.lossTick[planet.id] >
+              ContestedLossWindowTicks:
+            bot.lossAccum[planet.id] = 0
+          bot.lossAccum[planet.id] += loss
+          bot.lossTick[planet.id] = bot.frameTick
+          if bot.lossAccum[planet.id] >= ContestedLossShips:
+            bot.originAvoidUntil[planet.id] =
+              bot.frameTick + ContestedAvoidTicks
+            bot.lossAccum[planet.id] = 0
       bot.knownPlanets[planet.id] = planet
       if planet.ships >= 0:
         # A fresh ship-count reading resets the spent estimate.
         bot.spentShips[planet.id] = 0
+        # A planet observed too weak to launch is abandoned as an origin
+        # for a while: under enemy fire it never actually recovers on the
+        # growth schedule our out-of-view estimate assumes, so retrying it
+        # locks the bot into a depleted-vs-depleted trench war.
+        if planet.ownerId == bot.ownPlayerId and
+            planet.ships - OriginReserveShips < MinLaunchShips:
+          bot.originAvoidUntil[planet.id] = max(
+            bot.originAvoidUntil[planet.id],
+            bot.frameTick + OriginAvoidTicks
+          )
 
 proc knownPlanetSights(bot: Bot): seq[PlanetSight] =
-  ## Returns remembered planet sightings with ship counts estimated
-  ## forward in time: owned planets grow while out of view, and ships
-  ## we launched from an origin are deducted until the next sighting.
+  ## Returns remembered planet sightings with estimated ship counts.
   for planet in bot.knownPlanets:
     if not planet.found:
       continue
     var estimated = planet
-    if estimated.ships >= 0:
-      if estimated.ownerId != 0:
-        let elapsed = max(0, bot.frameTick - estimated.seenTick)
-        estimated.ships +=
-          elapsed div GrowthIntervalTicks[clamp(estimated.sizeOrd, 0, 2)]
-      if estimated.id < bot.spentShips.len:
-        estimated.ships = max(
-          0,
-          estimated.ships - bot.spentShips[estimated.id]
-        )
+    estimated.ships = bot.estimatedShips(planet)
     result.add(estimated)
 
 proc updateIdentity(bot: var Bot, planets: openArray[PlanetSight]) =
@@ -505,14 +575,22 @@ proc burstTickCount(shipCount: int): int =
       )
   min(SendBurstMaxHoldTicks, holdTicks + SendBurstPaddingTicks)
 
+proc usableOrigin(bot: Bot, planet: PlanetSight): bool =
+  ## Returns true when one owned planet may launch missions: strong
+  ## enough and not recently observed depleted (abandoned).
+  if planet.ownerId != bot.ownPlayerId:
+    return false
+  if planet.id < bot.originAvoidUntil.len and
+      bot.frameTick < bot.originAvoidUntil[planet.id]:
+    return false
+  planet.availableShips() >= MinLaunchShips
+
 proc planPressureMission(bot: var Bot, known: openArray[PlanetSight]) =
   ## Fallback when nothing is affordable: throw the richest planet's
   ## whole stock at the nearest target so pressure never stops.
   var origin = PlanetSight()
   for candidate in known:
-    if candidate.ownerId != bot.ownPlayerId:
-      continue
-    if candidate.availableShips() < MinLaunchShips:
+    if not bot.usableOrigin(candidate):
       continue
     if not origin.found or
         candidate.availableShips() > origin.availableShips():
@@ -522,19 +600,22 @@ proc planPressureMission(bot: var Bot, known: openArray[PlanetSight]) =
   var
     bestScore = high(int)
     bestTarget = PlanetSight()
-  for target in known:
-    if target.ownerId == bot.ownPlayerId:
-      continue
-    if target.id == bot.avoidedTargetId and
-        bot.frameTick < bot.avoidUntilTick:
-      continue
-    var score = distanceSquared(origin.x, origin.y, target.x, target.y) +
-      bot.captureCost(target) * bot.captureCost(target)
-    if target.ownerId != 0:
-      score = score * EnemyDistancePenalty
-    if score < bestScore:
-      bestScore = score
-      bestTarget = target
+  for wantEnemies in [false, true]:
+    for target in known:
+      if target.ownerId == bot.ownPlayerId:
+        continue
+      if (target.ownerId != 0) != wantEnemies:
+        continue
+      if target.id == bot.avoidedTargetId and
+          bot.frameTick < bot.avoidUntilTick:
+        continue
+      let score = distanceSquared(origin.x, origin.y, target.x, target.y) +
+        bot.captureCost(target) * bot.captureCost(target)
+      if score < bestScore:
+        bestScore = score
+        bestTarget = target
+    if bestTarget.found:
+      break
   if not bestTarget.found:
     return
   bot.mission = Mission(
@@ -550,51 +631,80 @@ proc planPressureMission(bot: var Bot, known: openArray[PlanetSight]) =
 
 proc planMission(bot: var Bot, known: openArray[PlanetSight]) =
   ## Picks the cheapest affordable capture as the next mission.
+  ## Colonizing is strictly prioritized: neutral planets never regrow,
+  ## so ships spent there are permanent progress, while attacking an
+  ## enemy frontline planet feeds an endless regrow-and-reinforce war.
+  ## Enemies are only targeted when no neutral mission exists at all.
   var
     bestScore = high(int)
     bestOrigin = PlanetSight()
     bestTarget = PlanetSight()
-  for target in known:
-    if target.ownerId == bot.ownPlayerId:
-      continue
-    if target.id == bot.avoidedTargetId and
-        bot.frameTick < bot.avoidUntilTick:
-      continue
-    let cost = bot.captureCost(target)
-    # Find the closest owned planet that can afford this target.
-    var
-      originScore = high(int)
-      origin = PlanetSight()
-    for candidate in known:
-      if candidate.ownerId != bot.ownPlayerId:
+  for wantEnemies in [false, true]:
+    for target in known:
+      if target.ownerId == bot.ownPlayerId:
         continue
-      if candidate.availableShips() < max(cost, MinLaunchShips):
+      if (target.ownerId != 0) != wantEnemies:
         continue
-      let distance = distanceSquared(
-        candidate.x, candidate.y, target.x, target.y
-      )
-      if distance < originScore:
-        originScore = distance
-        origin = candidate
-    if not origin.found:
-      continue
-    # Prefer neutrals: enemies pay a distance penalty so we settle first
-    # and fight only when an enemy planet is genuinely close and cheap.
-    # Fast-growing planets get a bounded bonus as future ship factories.
-    var score = originScore + cost * cost
-    if target.ownerId != 0:
-      score = score * EnemyDistancePenalty
-    score = score - SizeScoreBonus[clamp(target.sizeOrd, 0, 2)]
-    if score < bestScore:
-      bestScore = score
-      bestOrigin = origin
-      bestTarget = target
+      if target.id == bot.avoidedTargetId and
+          bot.frameTick < bot.avoidUntilTick:
+        continue
+      let cost = bot.captureCost(target)
+      # Find the nearest owned planet that can afford this target, then
+      # upgrade to the richest origin within 2x that distance: stockpiled
+      # rear planets should fund expansion instead of sitting idle while
+      # a barely-affording frontier planet drip-feeds every mission.
+      var nearestScore = high(int)
+      for candidate in known:
+        if not bot.usableOrigin(candidate) or
+            candidate.availableShips() < cost:
+          continue
+        let distance = distanceSquared(
+          candidate.x, candidate.y, target.x, target.y
+        )
+        if distance < nearestScore:
+          nearestScore = distance
+      if nearestScore == high(int):
+        continue
+      var
+        origin = PlanetSight()
+        originScore = nearestScore
+        originShips = -1
+      for candidate in known:
+        if not bot.usableOrigin(candidate) or
+            candidate.availableShips() < cost:
+          continue
+        let distance = distanceSquared(
+          candidate.x, candidate.y, target.x, target.y
+        )
+        # 2x the distance means 4x the squared distance.
+        if distance <= nearestScore * 4 and
+            candidate.availableShips() > originShips:
+          originShips = candidate.availableShips()
+          originScore = distance
+          origin = candidate
+      if not origin.found:
+        continue
+      # Fast-growing planets get a bounded bonus as future ship factories.
+      let score = originScore + cost * cost -
+        SizeScoreBonus[clamp(target.sizeOrd, 0, 2)]
+      if score < bestScore:
+        bestScore = score
+        bestOrigin = origin
+        bestTarget = target
+    if bestTarget.found:
+      break
   if bestTarget.found:
+    # Send the capture cost plus half the origin's surplus: the extra
+    # ships garrison the captured planet, turning it into a well-stocked
+    # origin for the next hop instead of leaving wealth pooled in the rear.
+    let
+      cost = bot.captureCost(bestTarget)
+      surplus = max(0, bestOrigin.availableShips() - cost)
     bot.mission = Mission(
       phase: PhaseGoOrigin,
       originId: bestOrigin.id,
       targetId: bestTarget.id,
-      budget: bot.captureCost(bestTarget),
+      budget: cost + surplus div 2,
       startedTick: bot.frameTick
     )
     bot.intent = "mission " & $bestOrigin.id & "->" & $bestTarget.id &
@@ -612,10 +722,11 @@ proc missionValid(bot: Bot, known: openArray[PlanetSight]): bool =
   let origin = known.findPlanet(bot.mission.originId)
   if not origin.found or origin.ownerId != bot.ownPlayerId:
     return false
-  # Abort early when the planned origin turns out too weak to matter,
-  # instead of flying there and camping on a 1-ship planet.
+  # Abort early when the planned origin turns out too weak to matter
+  # or got abandoned (observed depleted), instead of flying there and
+  # camping on a 1-ship planet.
   if bot.mission.phase in {PhaseGoOrigin, PhaseSetOrigin} and
-      origin.ships >= 0 and origin.availableShips() < MinLaunchShips:
+      not bot.usableOrigin(origin):
     return false
   let target = known.findPlanet(bot.mission.targetId)
   if not target.found or target.ownerId == bot.ownPlayerId:
@@ -629,6 +740,22 @@ proc trackSelectionStuck(bot: var Bot, selectedId: int) =
   else:
     bot.lastSelectedId = selectedId
     bot.selectionStuckTicks = 0
+
+proc loiterMask(bot: var Bot, known: openArray[PlanetSight]): uint8 =
+  ## Idle behavior between missions: park the cursor at the richest
+  ## owned planet instead of sweeping the whole map. That keeps the
+  ## cursor calm, near the next likely launch site, and refreshes that
+  ## planet's ship count. Sweeps only when nothing is known to park at.
+  var best = PlanetSight()
+  for planet in known:
+    if planet.ownerId != bot.ownPlayerId:
+      continue
+    if not best.found or planet.availableShips() > best.availableShips():
+      best = planet
+  if not best.found:
+    return bot.sweepMask()
+  bot.intent = "loiter " & $best.id
+  bot.steerMask(best.x, best.y)
 
 proc decideNextMask(bot: var Bot): uint8 =
   ## Chooses the next controller mask: the settler-policy mission loop.
@@ -653,7 +780,7 @@ proc decideNextMask(bot: var Bot): uint8 =
     bot.planMission(known)
   if bot.mission.phase == PhaseIdle:
     bot.intent = "scout"
-    return bot.sweepMask()
+    return bot.loiterMask(known)
 
   let
     origin = known.findPlanet(bot.mission.originId)
@@ -708,10 +835,23 @@ proc decideNextMask(bot: var Bot): uint8 =
   of PhaseSend:
     # Stop early when the origin is drained or the target flipped to us.
     if target.ownerId == bot.ownPlayerId:
+      if origin.id < bot.originFailStreak.len:
+        bot.originFailStreak[origin.id] = 0
       bot.resetMission()
       bot.intent = "captured " & $target.id
       return 0
     if origin.ships >= 0 and origin.ships <= OriginReserveShips:
+      # Hold position while a nearly-flipped target's incoming ships
+      # land; the origin regrows a ship every couple of seconds too.
+      if target.ships >= 0 and target.ships <= FinishKillShips and
+          bot.frameTick - bot.mission.startedTick < MaxMissionTicks:
+        bot.intent = "finishing " & $target.id & " (origin low)"
+        return ButtonB
+      # An origin that ran dry mid-send is being outdrained by enemy
+      # fire; ban it so the next mission launches from elsewhere.
+      if origin.id < bot.originAvoidUntil.len:
+        bot.originAvoidUntil[origin.id] =
+          bot.frameTick + ContestedAvoidTicks
       bot.resetMission()
       bot.intent = "origin drained"
       return 0
@@ -719,6 +859,27 @@ proc decideNextMask(bot: var Bot): uint8 =
       bot.mission.phase = PhaseGoTarget
       return 0
     if bot.frameTick >= bot.mission.sendUntilTick:
+      # Finish the kill: a target about to flip is worth a short burst
+      # extension — abandoning at 1 ship wastes the whole investment,
+      # and ships already in flight need a moment to land.
+      if target.ships >= 0 and target.ships <= FinishKillShips and
+          (origin.ships < 0 or origin.ships > OriginReserveShips) and
+          bot.frameTick - bot.mission.startedTick < MaxMissionTicks:
+        bot.mission.sendUntilTick = bot.frameTick + FinishKillExtendTicks
+        bot.intent = "finishing " & $target.id
+        return ButtonB
+      # The burst ran its full window without flipping the target: the
+      # planned ships did not arrive as planned (enemy stream throttled
+      # the origin or intercepted at the target). A couple of those in a
+      # row marks the origin contested no matter what the ship
+      # accounting says — outcomes cannot drift.
+      if origin.id < bot.originFailStreak.len:
+        inc bot.originFailStreak[origin.id]
+        if bot.originFailStreak[origin.id] >= MaxOriginFailStreak:
+          bot.originFailStreak[origin.id] = 0
+          if origin.id < bot.originAvoidUntil.len:
+            bot.originAvoidUntil[origin.id] =
+              bot.frameTick + ContestedAvoidTicks
       bot.resetMission()
       bot.intent = "burst done"
       return 0
