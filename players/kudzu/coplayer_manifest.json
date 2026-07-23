@@ -1,0 +1,8 @@
+{
+  "author": "softmax@softmax.com",
+  "name": "kudzu",
+  "image_uri": "",
+  "binary": "/bin/kudzu",
+  "description": "Cost-aware expansion bot: settles the cheapest affordable neutral planets with budgeted ship bursts, abandons contested origins, and keeps constant pressure when no clean capture is available.",
+  "games": ["planet_wars"]
+}
