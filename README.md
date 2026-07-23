@@ -17,7 +17,7 @@ coworld upload-coworld dist/coworld_manifest.json
 
 ```bash
 nimble build
-./planet_wars --address:0.0.0.0 --port:8080
+./planet_wars --host:0.0.0.0 --port:8080
 ```
 
 Open `http://localhost:8080/client/global` to spectate.
