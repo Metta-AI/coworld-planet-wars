@@ -147,7 +147,7 @@
           "title": "rules.md",
           "content": {
             "type": "text",
-            "value": "# Planet Wars Rules\n\nPlayers conquer planets and launch ships across a small star map. Neutral planets can be captured by sending enough ships. Owned planets grow more ships over time. A player wins when every remaining active planet and ship belongs to them. If the tick limit is reached first, the game ends with no winner."
+            "value": "# Planet Wars Rules\n\nPlayers conquer planets and launch ships across a star map. Every player sees the whole board: there is no camera, no scrolling and no fog.\n\n## Controls\n\nThe mouse drives everything. Click one of your own planets to select it, shift-click to add more, and double-click to select everything you own. Click any other planet to launch a wave at it from every selected planet. The selection survives the send, so clicking a second target sends again.\n\nThe number keys set what share of a planet each wave launches: 1 for 10% through 9 for 90%, and 0 for everything. Waves start at half. A planet never sends its last ship, so a send can never leave one undefended.\n\n## Combat\n\nA wave spawns in rings around the planet circumference and fans out, each ship steering on its own heading. Ships from the same player push each other apart; ships from different players pass straight through. Arriving ships fight the garrison one for one, and the planet flips when the attackers outnumber it.\n\n## Winning\n\nNeutral planets never regrow, so an uncaptured planet is a fixed price. Owned planets grow a ship every interval, which makes early captures compound. Score accrues every second as the square of the planets you hold, so holding twelve planets scores four times as fast as holding six.\n\nA player wins when every remaining planet and ship belongs to them. If the tick limit is reached first, the game ends with no winner and the scores stand."
           }
         },
         {
@@ -179,7 +179,7 @@
       "id": "skurge",
       "type": "player",
       "name": "Skurge",
-      "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets.",
+      "description": "Planet Wars attacker that ranks every source and target on the board each tick and clicks the best affordable capture.",
       "image": "{{SKURGE_IMAGE}}",
       "run": ["/bin/skurge"]
     }
@@ -194,15 +194,7 @@
       "image": "{{COMMISSIONER_IMAGE}}"
     }
   ],
-  "reporter": [
-    {
-      "id": "default-reporter",
-      "type": "reporter",
-      "name": "Default Reporter",
-      "description": "Default Coworld reporter for generic episode artifacts.",
-      "image": "ghcr.io/metta-ai/reporters-default:latest"
-    }
-  ],
+  "reporter": [],
   "grader": [
     {
       "id": "bitworld-score-grader",

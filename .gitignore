@@ -7,3 +7,4 @@ nim.cfg
 *.deps
 *.dot
 /tests/tests
+players/kudzu/
