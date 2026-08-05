@@ -420,3 +420,205 @@ doAssert seekGame.tickCount == 0
 seeker.applyReplayCommand(seekGame, 'e')
 doAssert seekGame.tickCount == ReplayTestTicks
 removeFile(replayPath)
+
+echo "Testing planet hit test only picks planets under the point"
+var hitConfig = defaultSimConfig()
+hitConfig.planetCount = 6
+hitConfig.maxTicks = 0
+var hitGame = initSimServer(4242, hitConfig)
+let probePlanet = hitGame.planets[0]
+doAssert hitGame.planetIdAt(probePlanet.x, probePlanet.y) == probePlanet.id
+doAssert hitGame.planetIdAt(
+  probePlanet.x + probePlanet.radius + PlanetClickPad - 1,
+  probePlanet.y
+) == probePlanet.id
+# Far from every planet the click selects nothing rather than snapping to
+# the nearest, which is how the old cursor behaved.
+var emptyX = 0
+block findEmpty:
+  for x in countup(0, WorldWidthPixels - 1, 3):
+    for y in countup(0, WorldHeightPixels - 1, 3):
+      if hitGame.planetIdAt(x, y) < 0:
+        emptyX = x
+        doAssert hitGame.planetIdAt(x, y) == -1
+        break findEmpty
+doAssert emptyX >= 0
+
+echo "Testing click selects, shift-click adds, and a target sends"
+var clickConfig = defaultSimConfig()
+clickConfig.planetCount = 8
+clickConfig.maxTicks = 0
+var clickGame = initSimServer(99, clickConfig)
+let clickPlayer = clickGame.addPlayer("clicker")
+# Give the player a second planet so multi-select can be exercised.
+var ownedIds: seq[int] = @[]
+for planet in clickGame.planets.mitems:
+  if planet.ownerId == clickGame.players[clickPlayer].id:
+    ownedIds.add(planet.id)
+var extraId = -1
+for planet in clickGame.planets.mitems:
+  if planet.ownerId == 0 and extraId < 0:
+    planet.ownerId = clickGame.players[clickPlayer].id
+    planet.ships = 20
+    extraId = planet.id
+doAssert extraId > 0
+let firstOwnedId = ownedIds[0]
+
+proc clickAt(game: SimServer, planetId: int,
+    kind: PlayerCommandKind): PlayerInput =
+  ## Builds one input carrying a single click on a planet's centre.
+  let index = game.findPlanetIndexById(planetId)
+  result.commandCount = 1
+  result.commands[0] = PlayerCommand(
+    kind: kind,
+    x: game.planets[index].x,
+    y: game.planets[index].y
+  )
+
+clickGame.step([clickGame.clickAt(firstOwnedId, CommandClick)])
+doAssert clickGame.players[clickPlayer].selectedPlanetIds == @[firstOwnedId]
+clickGame.step([clickGame.clickAt(extraId, CommandShiftClick)])
+doAssert clickGame.players[clickPlayer].selectedPlanetIds.len == 2
+doAssert extraId in clickGame.players[clickPlayer].selectedPlanetIds
+
+echo "Testing a wave sends half of each selected planet and keeps selection"
+var targetId = -1
+for planet in clickGame.planets:
+  if planet.ownerId == 0:
+    targetId = planet.id
+    break
+doAssert targetId > 0
+let
+  beforeShips = block:
+    var total = 0
+    for planetId in clickGame.players[clickPlayer].selectedPlanetIds:
+      total += clickGame.planets[clickGame.findPlanetIndexById(planetId)].ships
+    total
+  selectionBefore = clickGame.players[clickPlayer].selectedPlanetIds
+clickGame.step([clickGame.clickAt(targetId, CommandClick)])
+var afterShips = 0
+for planetId in selectionBefore:
+  afterShips += clickGame.planets[clickGame.findPlanetIndexById(planetId)].ships
+doAssert clickGame.ships.len > 0
+doAssert afterShips < beforeShips
+# Half of each planet, and never enough to abandon one.
+doAssert afterShips >= selectionBefore.len
+doAssert clickGame.players[clickPlayer].selectedPlanetIds == selectionBefore
+
+echo "Testing sends never drop a planet below one ship"
+var drainGame = initSimServer(7, clickConfig)
+let drainPlayer = drainGame.addPlayer("drainer")
+drainGame.players[drainPlayer].sendPercent = 100
+var drainOriginId = -1
+for planet in drainGame.planets.mitems:
+  if planet.ownerId == drainGame.players[drainPlayer].id:
+    planet.ships = 10
+    drainOriginId = planet.id
+var drainTargetId = -1
+for planet in drainGame.planets:
+  if planet.ownerId == 0:
+    drainTargetId = planet.id
+    break
+drainGame.players[drainPlayer].selectedPlanetIds = @[drainOriginId]
+discard drainGame.sendFleet(drainPlayer, drainTargetId)
+doAssert drainGame.planets[
+  drainGame.findPlanetIndexById(drainOriginId)
+].ships == 1
+
+echo "Testing a new player defaults to half-strength waves"
+doAssert drainGame.players[drainPlayer].id > 0
+var defaultGame = initSimServer(11, clickConfig)
+let defaultPlayer = defaultGame.addPlayer("fresh")
+doAssert defaultGame.players[defaultPlayer].sendPercent == DefaultSendPercent
+doAssert DefaultSendPercent == 50
+
+echo "Testing friendly ships separate and rival ships pass through"
+var pushConfig = defaultSimConfig()
+pushConfig.planetCount = 4
+pushConfig.maxTicks = 0
+var pushGame = initSimServer(21, pushConfig)
+let
+  pushA = pushGame.addPlayer("a")
+  pushB = pushGame.addPlayer("b")
+let pushTarget = pushGame.planets[0].id
+proc stackedShip(owner, target: int): Ship =
+  ## Two ships sharing one position, already launched.
+  Ship(
+    ownerId: owner,
+    targetPlanet: target,
+    posX: 100 * SubpixelScale,
+    posY: 100 * SubpixelScale,
+    heading: 0,
+    duration: 100
+  )
+pushGame.ships = @[
+  stackedShip(pushGame.players[pushA].id, pushTarget),
+  stackedShip(pushGame.players[pushA].id, pushTarget)
+]
+pushGame.step([PlayerInput(), PlayerInput()])
+let friendlyGap =
+  abs(pushGame.ships[0].posX - pushGame.ships[1].posX) +
+  abs(pushGame.ships[0].posY - pushGame.ships[1].posY)
+doAssert friendlyGap > 0
+
+pushGame.ships = @[
+  stackedShip(pushGame.players[pushA].id, pushTarget),
+  stackedShip(pushGame.players[pushB].id, pushTarget)
+]
+pushGame.step([PlayerInput(), PlayerInput()])
+let rivalGap =
+  abs(pushGame.ships[0].posX - pushGame.ships[1].posX) +
+  abs(pushGame.ships[0].posY - pushGame.ships[1].posY)
+doAssert rivalGap == 0
+
+echo "Testing an unchanged board re-sends nothing"
+var deltaConfig = defaultSimConfig()
+deltaConfig.planetCount = 20
+deltaConfig.maxTicks = 0
+var deltaGame = initSimServer(811, deltaConfig)
+let deltaIndex = deltaGame.addPlayer("watcher")
+var deltaFirstState: PlayerViewerState
+let deltaFirstPacket = deltaGame.buildSpriteProtocolPlayerUpdates(
+  deltaIndex,
+  initPlayerViewerState(),
+  deltaFirstState
+)
+# The first packet is a full snapshot: every planet, its digits and the map.
+doAssert deltaFirstPacket.spritePacketObjectIds().len > 20
+
+var deltaSecondState: PlayerViewerState
+let deltaSecondPacket = deltaGame.buildSpriteProtocolPlayerUpdates(
+  deltaIndex,
+  deltaFirstState,
+  deltaSecondState
+)
+# Nothing moved between the two builds, so nothing should go on the wire.
+doAssert deltaSecondPacket.spritePacketObjectIds().len == 0
+
+echo "Testing one changed planet re-sends only that planet"
+deltaGame.planets[0].ships = 7
+var deltaThirdState: PlayerViewerState
+let deltaThirdPacket = deltaGame.buildSpriteProtocolPlayerUpdates(
+  deltaIndex,
+  deltaSecondState,
+  deltaThirdState
+)
+let deltaThirdIds = deltaThirdPacket.spritePacketObjectIds()
+doAssert deltaThirdIds.len > 0
+doAssert deltaThirdIds.len <= 2
+doAssert PlanetTextObjectBaseForTest +
+  deltaGame.planets[0].id * PlanetTextMaxCharsForTest in deltaThirdIds
+
+echo "Testing config sets the starting wave size"
+var percentConfig = defaultSimConfig()
+percentConfig.planetCount = 4
+percentConfig.maxTicks = 0
+percentConfig.defaultSendPercent = 80
+var percentGame = initSimServer(823, percentConfig)
+let percentIndex = percentGame.addPlayer("sender")
+doAssert percentGame.players[percentIndex].sendPercent == 80
+# Out-of-range config must clamp rather than produce an unusable player.
+var wildConfig = percentConfig
+wildConfig.defaultSendPercent = 500
+var wildGame = initSimServer(824, wildConfig)
+doAssert wildGame.players[wildGame.addPlayer("wild")].sendPercent == 100

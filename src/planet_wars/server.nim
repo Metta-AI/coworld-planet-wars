@@ -7,6 +7,28 @@ import
 const
   HealthzPath = "/healthz"
   UnassignedPlayerIndex = 0x7fffffff
+  ## Planet Wars ships its own client so mouse play, modifier keys and the
+  ## send percentage can evolve without renegotiating bitworld's input
+  ## protocol. Rendering still speaks the shared sprite protocol.
+  PlanetWarsClientHtml = staticRead("../../client/planet_wars_client.html")
+  PlanetWarsClientRoutes = [
+    "/client/global",
+    "/clients/global",
+    "/client/global.html",
+    "/client/player",
+    "/clients/player",
+    "/client/player.html"
+  ]
+
+proc servePlanetWarsClient(request: Request): bool =
+  ## Serves the Planet Wars client for any client route.
+  if request.httpMethod != "GET" or request.path notin PlanetWarsClientRoutes:
+    return false
+  var headers: HttpHeaders
+  headers["Content-Type"] = "text/html; charset=utf-8"
+  headers["Cache-Control"] = "no-cache"
+  request.respond(200, headers, PlanetWarsClientHtml)
+  true
 
 type
   WebSocketAppState = object
@@ -255,6 +277,8 @@ proc httpHandler(request: Request) =
         appState.lastAppliedMasks.del(websocket)
         appState.globalViewers.del(websocket)
         appState.rewardViewers[websocket] = true
+  elif request.servePlanetWarsClient():
+    discard
   elif request.serveClientRoute(GlobalClientRoute):
     discard
   else:
@@ -420,9 +444,16 @@ proc sendTextPacket(websocket: WebSocket, packet: string) {.measure.} =
   ## Sends one text protocol packet.
   websocket.send(packet, TextMessage)
 
+var serverSpeedMultiplier* = 1
+  ## Local iteration only: run the clock this many times faster than real
+  ## time. The simulation is fixed-step, so this changes how long a game
+  ## takes to watch, never what happens in it.
+
 proc runFrameLimiter(previousTick: var MonoTime) =
   ## Sleeps to keep the server near the target frame rate.
-  let frameDuration = initDuration(microseconds = 1_000_000 div TargetFps)
+  let frameDuration = initDuration(
+    microseconds = 1_000_000 div (TargetFps * max(1, serverSpeedMultiplier))
+  )
   let elapsed = getMonoTime() - previousTick
   if elapsed < frameDuration:
     sleep(int((frameDuration - elapsed).inMilliseconds))
@@ -544,6 +575,19 @@ proc runServerLoop*(
             currentMask,
             previousMask
           )
+          # Fold in mouse play. The viewer state accumulates pointer moves
+          # and clicks between ticks; draining it here keeps one input per
+          # player per tick.
+          if websocket in appState.playerViewers:
+            var viewer = appState.playerViewers[websocket]
+            let mouse = viewer.takePlayerInput()
+            appState.playerViewers[websocket] = viewer
+            inputs[playerIndex].hasCursor = mouse.hasCursor
+            inputs[playerIndex].cursorX = mouse.cursorX
+            inputs[playerIndex].cursorY = mouse.cursorY
+            inputs[playerIndex].sendPercent = mouse.sendPercent
+            inputs[playerIndex].commandCount = mouse.commandCount
+            inputs[playerIndex].commands = mouse.commands
           appState.lastAppliedMasks[websocket] = currentMask
           replayWriter.writeInputMaskChange(
             tickTime(sim.tickCount),
@@ -575,7 +619,20 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             if sockets[i] in appState.playerViewers:
-              appState.playerViewers[sockets[i]] = nextState
+              # Rendering rebuilds its half of the viewer state from a
+              # snapshot taken earlier in the tick. Input accumulates on
+              # the same object, so carry the live input fields across or
+              # the write-back resurrects clicks already consumed and
+              # replays them every tick.
+              var merged = nextState
+              let live = appState.playerViewers[sockets[i]]
+              merged.pointerX = live.pointerX
+              merged.pointerY = live.pointerY
+              merged.hasPointer = live.hasPointer
+              merged.sendPercent = live.sendPercent
+              merged.pendingCount = live.pendingCount
+              merged.pending = live.pending
+              appState.playerViewers[sockets[i]] = merged
       except:
         {.gcsafe.}:
           withLock appState.lock:

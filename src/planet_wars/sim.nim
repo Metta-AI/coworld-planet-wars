@@ -1,11 +1,11 @@
 import
-  std/[json, os, random, strutils],
+  std/[json, math, os, random, strutils],
   bitworld/client as bitworldClient, bitworld/pixelfonts, bitworld/profile,
   bitworld/sprites
 
 const
   GameName* = "planet_wars"
-  GameVersion* = "1"
+  GameVersion* = "2"
   WorldWidthPixels* = 512
   WorldHeightPixels* = 512
   PlayerViewportWidth* = 320
@@ -16,6 +16,7 @@ const
   DensePlanetCount* = 47
   PlanetSpawnMargin* = 12
   PlanetSpacing* = 10
+  PlanetClickPad* = 10
   BaseFps* = 24
   TargetFps* = 60
   WaitForPlayersTimeoutTicks* = TargetFps * 30
@@ -26,6 +27,21 @@ const
   MinSendRepeatInterval* = 1
   SendAccelerationTicks* = 10
   ShipLaneOffsetMax* = 3
+  ## Ships leave from points spaced around the planet's edge. One ring is
+  ## as many as fit; anything more waits for the next ring.
+  ShipsPerRing* = 12
+  ## Fixed-point movement. Integer only, so replays stay bit-identical.
+  SubpixelScale* = 256
+  HeadingCount* = 256
+  TrigScale* = 4096
+  ShipSpeedSubpixels* =
+    (ShipSpeedPixelsPerSecond * SubpixelScale) div TargetFps
+  ShipRadiusSubpixels* = 6 * SubpixelScale
+  ShipPushSubpixels* = 60
+  CollisionCellPixels* = 16
+  CollisionGridSide* = WorldWidthPixels div CollisionCellPixels
+  RingLaunchDelayTicks* = 4
+  DefaultSendPercent* = 50
   ScoreIntervalTicks* = TargetFps
   WebSocketPath* = "/player"
   GlobalWebSocketPath* = "/global"
@@ -81,6 +97,7 @@ type
     planetCount*: int
     maxTicks*: int
     maxGames*: int
+    defaultSendPercent*: int
 
   PlanetSize* = enum
     PlanetSmall
@@ -108,6 +125,15 @@ type
     endY*: int
     progress*: int
     duration*: int
+    ## Ticks left on the launch pad. A wave larger than one ring around
+    ## the planet leaves in successive rings rather than as one blob.
+    launchDelay*: int
+    ## Live position in subpixels and a heading in 256 steps. Ships steer
+    ## toward their target rather than sliding along a fixed line, which
+    ## is what lets them be pushed aside without losing their way.
+    posX*: int
+    posY*: int
+    heading*: uint8
 
   Star* = object
     x*: int
@@ -133,11 +159,26 @@ type
     cursorInputX*: int
     cursorInputY*: int
     cursorBoostTicks*: int
+    ## Planets held for the next send, by stable planet id. Ids rather than
+    ## indices because a selection outlives the array ordering.
+    selectedPlanetIds*: seq[int]
+    sendPercent*: int
 
   ChatMessage* = object
     playerId*: int
     text*: string
     tick*: int
+
+  PlayerCommandKind* = enum
+    CommandNone
+    CommandClick
+    CommandShiftClick
+    CommandSelectAll
+
+  PlayerCommand* = object
+    kind*: PlayerCommandKind
+    x*: int
+    y*: int
 
   PlayerInput* = object
     up*: bool
@@ -146,6 +187,15 @@ type
     right*: bool
     attackPressed*: bool
     sendHeld*: bool
+    ## Mouse play. The cursor is placed directly rather than steered, and
+    ## clicks arrive as discrete commands, so more than one can land in a
+    ## single tick. Four is past what a hand can produce at 60 Hz.
+    hasCursor*: bool
+    cursorX*: int
+    cursorY*: int
+    sendPercent*: int
+    commandCount*: int
+    commands*: array[4, PlayerCommand]
 
   SimServer* = object
     config*: SimConfig
@@ -180,7 +230,8 @@ proc defaultSimConfig*(): SimConfig =
   SimConfig(
     planetCount: DefaultPlanetCount,
     maxTicks: DefaultMaxTicks,
-    maxGames: DefaultMaxGames
+    maxGames: DefaultMaxGames,
+    defaultSendPercent: DefaultSendPercent
   )
 
 proc checkedPlanetCount*(planetCount: int): int =
@@ -483,6 +534,7 @@ proc addPlayer*(sim: var SimServer, name: string): int =
   sim.players.add Player(
     id: playerId,
     name: name,
+    sendPercent: clamp(sim.config.defaultSendPercent, 10, 100),
     color: playerColor.color,
     colorHue: playerColor.hue,
     selectedPlanet: claimedPlanet,
@@ -642,16 +694,43 @@ proc randomShipLaneOffset(
       return (dx, dy)
   (laneRadius, 0)
 
+proc buildCosTable(): array[HeadingCount, int32] =
+  ## Builds the fixed-point cosine table at compile time. Floats appear
+  ## here and nowhere else, so the running simulation stays integral.
+  for i in 0 ..< HeadingCount:
+    let angle = float64(i) * 2.0 * 3.14159265358979 / float64(HeadingCount)
+    result[i] = int32(round(cos(angle) * float64(TrigScale)))
+
+const CosTable = buildCosTable()
+
+proc cosHeading*(heading: uint8): int =
+  ## Cosine of a heading, scaled by TrigScale.
+  int(CosTable[int(heading)])
+
+proc sinHeading*(heading: uint8): int =
+  ## Sine of a heading, scaled by TrigScale. Screen y grows downward, so
+  ## this is the cosine table shifted a quarter turn.
+  int(CosTable[(int(heading) + 192) and (HeadingCount - 1)])
+
+proc headingFromDelta*(dx, dy: int): uint8 =
+  ## Nearest of the 256 headings pointing along a delta. Found by scanning
+  ## the table with integer cross products, so no trigonometry is needed
+  ## at runtime.
+  if dx == 0 and dy == 0:
+    return 0
+  var
+    best = 0
+    bestDot = low(int)
+  for candidate in 0 ..< HeadingCount:
+    let dot = cosHeading(uint8(candidate)) * dx + sinHeading(uint8(candidate)) * dy
+    if dot > bestDot:
+      bestDot = dot
+      best = candidate
+  uint8(best)
+
 proc currentShipPosition*(ship: Ship): tuple[x: int, y: int] =
   ## Returns the current world position for one ship.
-  if ship.duration <= 0:
-    return (ship.endX, ship.endY)
-  (
-    ship.startX + ((ship.endX - ship.startX) * ship.progress) div
-      ship.duration,
-    ship.startY + ((ship.endY - ship.startY) * ship.progress) div
-      ship.duration
-  )
+  (ship.posX div SubpixelScale, ship.posY div SubpixelScale)
 
 proc sendShip*(sim: var SimServer, playerIndex: int): bool {.measure.} =
   ## Sends one ship from the selected origin to the selected target.
@@ -691,6 +770,151 @@ proc sendShip*(sim: var SimServer, playerIndex: int): bool {.measure.} =
   sim.markScoresChanged()
   true
 
+proc planetIdAt*(sim: SimServer, worldX, worldY: int): int =
+  ## Returns the planet under a world point, or -1 when the point is
+  ## empty space. Unlike the old cursor model this does not snap to the
+  ## nearest planet: clicking nothing selects nothing.
+  result = -1
+  var bestDistance = high(int)
+  for planet in sim.planets:
+    let
+      dx = planet.x - worldX
+      dy = planet.y - worldY
+      distance = dx * dx + dy * dy
+      reach = planet.radius + PlanetClickPad
+    if distance <= reach * reach and distance < bestDistance:
+      bestDistance = distance
+      result = planet.id
+
+proc ownsPlanetId(sim: SimServer, playerIndex, planetId: int): bool =
+  ## Returns true when one player owns a planet by id.
+  let index = sim.findPlanetIndexById(planetId)
+  index >= 0 and sim.planets[index].ownerId == sim.players[playerIndex].id
+
+proc pruneSelection(sim: var SimServer, playerIndex: int) =
+  ## Drops selected planets that were lost or destroyed.
+  var kept: seq[int] = @[]
+  for planetId in sim.players[playerIndex].selectedPlanetIds:
+    if sim.ownsPlanetId(playerIndex, planetId):
+      kept.add(planetId)
+  sim.players[playerIndex].selectedPlanetIds = kept
+
+proc spreadOffset(
+  slot,
+  radius,
+  towardX,
+  towardY: int
+): tuple[x, y: int] =
+  ## Returns one launch point on a planet's edge. Slots fan out either
+  ## side of the direction of travel, so a wave leaves facing its target
+  ## instead of stacking on a single pixel.
+  ##
+  ## Integer only: the fan is built from a small fixed table rather than
+  ## trigonometry, keeping the simulation deterministic.
+  const
+    FanNumerators = [0, 2, -2, 4, -4, 6, -6, 8, -8, 10, -10, 12]
+    FanDenominator = 16
+  let
+    step = FanNumerators[slot mod FanNumerators.len]
+    # Perpendicular to the travel direction, scaled down to stay on the
+    # edge rather than swinging wide.
+    perpX = -towardY
+    perpY = towardX
+    length = max(1, abs(towardX) + abs(towardY))
+    alongX = (towardX * radius) div length
+    alongY = (towardY * radius) div length
+    sideX = (perpX * radius * step) div (length * FanDenominator)
+    sideY = (perpY * radius * step) div (length * FanDenominator)
+  (alongX + sideX, alongY + sideY)
+
+proc sendFleet*(
+  sim: var SimServer,
+  playerIndex,
+  targetPlanetId: int
+): int {.measure.} =
+  ## Sends a percentage of the ships on every selected planet toward one
+  ## target, and returns how many ships launched. A planet always keeps
+  ## one ship, so a send can never abandon a world.
+  let targetIndex = sim.findPlanetIndexById(targetPlanetId)
+  if targetIndex < 0:
+    return 0
+  let percent = clamp(sim.players[playerIndex].sendPercent, 10, 100)
+  for planetId in sim.players[playerIndex].selectedPlanetIds:
+    if planetId == targetPlanetId:
+      continue
+    let originIndex = sim.findPlanetIndexById(planetId)
+    if originIndex < 0 or
+        sim.planets[originIndex].ownerId != sim.players[playerIndex].id:
+      continue
+    let
+      available = sim.planets[originIndex].ships - 1
+      count = min((sim.planets[originIndex].ships * percent) div 100, available)
+    if count <= 0:
+      continue
+    for launched in 0 ..< count:
+      let
+        originPlanet = sim.planets[originIndex]
+        targetPlanet = sim.planets[targetIndex]
+        ring = launched div ShipsPerRing
+        slot = launched mod ShipsPerRing
+        # Spread the ring around the edge, centred on the heading to the
+        # target so the leading ships already face the right way.
+        toTargetX = targetPlanet.x - originPlanet.x
+        toTargetY = targetPlanet.y - originPlanet.y
+        spread = spreadOffset(slot, originPlanet.radius + 2,
+          toTargetX, toTargetY)
+        startX = originPlanet.x + spread.x
+        startY = originPlanet.y + spread.y
+        endX = targetPlanet.x + spread.x div 2
+        endY = targetPlanet.y + spread.y div 2
+      dec sim.planets[originIndex].ships
+      sim.ships.add Ship(
+        ownerId: sim.players[playerIndex].id,
+        color: sim.players[playerIndex].color,
+        targetPlanet: targetPlanet.id,
+        startX: startX,
+        startY: startY,
+        endX: endX,
+        endY: endY,
+        duration: shipDuration(startX, startY, endX, endY),
+        launchDelay: ring * RingLaunchDelayTicks,
+        posX: startX * SubpixelScale,
+        posY: startY * SubpixelScale,
+        heading: headingFromDelta(endX - startX, endY - startY)
+      )
+      inc result
+  if result > 0:
+    sim.markScoresChanged()
+
+proc applyPlayerCommand(
+  sim: var SimServer,
+  playerIndex: int,
+  command: PlayerCommand
+) =
+  ## Applies one click. What you click decides what happens: your own
+  ## planet selects, anything else is a target and receives a wave from
+  ## whatever is selected. One button does the whole game.
+  let planetId = sim.planetIdAt(command.x, command.y)
+  if command.kind == CommandSelectAll:
+    var owned: seq[int] = @[]
+    for planet in sim.planets:
+      if planet.ownerId == sim.players[playerIndex].id:
+        owned.add(planet.id)
+    sim.players[playerIndex].selectedPlanetIds = owned
+    return
+  if planetId < 0 or command.kind == CommandNone:
+    return
+  if sim.ownsPlanetId(playerIndex, planetId):
+    if command.kind == CommandShiftClick:
+      if planetId notin sim.players[playerIndex].selectedPlanetIds:
+        sim.players[playerIndex].selectedPlanetIds.add(planetId)
+    else:
+      sim.players[playerIndex].selectedPlanetIds = @[planetId]
+    return
+  # A target. The selection survives the send, so clicking a second
+  # target immediately launches another wave from the same planets.
+  discard sim.sendFleet(playerIndex, planetId)
+
 proc resolveShipArrival(sim: var SimServer, ship: Ship) =
   ## Applies a ship arrival to its target planet.
   let targetIndex = sim.findPlanetIndexById(ship.targetPlanet)
@@ -706,16 +930,105 @@ proc resolveShipArrival(sim: var SimServer, ship: Ship) =
       sim.planets[targetIndex].growthTicks = 0
   sim.markScoresChanged()
 
+proc separateShips(sim: var SimServer) {.measure.} =
+  ## Pushes overlapping ships of the same owner apart. Ships belonging to
+  ## different players pass through each other untouched, so a wave is
+  ## never blocked by an enemy stream.
+  ##
+  ## Candidates come from a uniform integer grid rebuilt each tick, which
+  ## keeps the cost near linear without any floating point.
+  if sim.ships.len < 2:
+    return
+  var buckets = newSeq[seq[int32]](CollisionGridSide * CollisionGridSide)
+  for index, ship in sim.ships:
+    if ship.launchDelay > 0:
+      continue
+    let
+      cellX = clamp(
+        (ship.posX div SubpixelScale) div CollisionCellPixels,
+        0, CollisionGridSide - 1
+      )
+      cellY = clamp(
+        (ship.posY div SubpixelScale) div CollisionCellPixels,
+        0, CollisionGridSide - 1
+      )
+    buckets[cellY * CollisionGridSide + cellX].add(int32(index))
+  let minGap = ShipRadiusSubpixels * 2
+  for cellY in 0 ..< CollisionGridSide:
+    for cellX in 0 ..< CollisionGridSide:
+      for offsetY in -1 .. 1:
+        for offsetX in -1 .. 1:
+          let
+            otherY = cellY + offsetY
+            otherX = cellX + offsetX
+          if otherX < 0 or otherY < 0 or
+              otherX >= CollisionGridSide or otherY >= CollisionGridSide:
+            continue
+          for a in buckets[cellY * CollisionGridSide + cellX]:
+            for b in buckets[otherY * CollisionGridSide + otherX]:
+              if b <= a:
+                continue
+              let first = int(a)
+              let second = int(b)
+              if sim.ships[first].ownerId != sim.ships[second].ownerId:
+                continue
+              let
+                dx = sim.ships[second].posX - sim.ships[first].posX
+                dy = sim.ships[second].posY - sim.ships[first].posY
+              if dx * dx + dy * dy >= minGap * minGap:
+                continue
+              # Coincident ships still need a stable direction to part in,
+              # so fall back to a spread derived from the pair's indices.
+              let away =
+                if dx == 0 and dy == 0:
+                  uint8((first * 37 + second * 17) and (HeadingCount - 1))
+                else:
+                  headingFromDelta(dx, dy)
+              let
+                pushX = (cosHeading(away) * ShipPushSubpixels) div TrigScale
+                pushY = (sinHeading(away) * ShipPushSubpixels) div TrigScale
+              sim.ships[second].posX += pushX
+              sim.ships[second].posY += pushY
+              sim.ships[first].posX -= pushX
+              sim.ships[first].posY -= pushY
+
 proc stepShips(sim: var SimServer) {.measure.} =
-  ## Advances all ships and resolves arrivals.
+  ## Advances all ships, separates crowded friendly ships, and resolves
+  ## arrivals.
+  for ship in sim.ships.mitems:
+    if ship.launchDelay > 0:
+      dec ship.launchDelay
+      continue
+    inc ship.progress
+    let targetIndex = sim.findPlanetIndexById(ship.targetPlanet)
+    if targetIndex >= 0:
+      # Re-aim every tick so a ship nudged aside still converges.
+      ship.heading = headingFromDelta(
+        sim.planets[targetIndex].x * SubpixelScale - ship.posX,
+        sim.planets[targetIndex].y * SubpixelScale - ship.posY
+      )
+    ship.posX += (cosHeading(ship.heading) * ShipSpeedSubpixels) div TrigScale
+    ship.posY += (sinHeading(ship.heading) * ShipSpeedSubpixels) div TrigScale
+  sim.separateShips()
   var activeShips: seq[Ship] = @[]
   for ship in sim.ships:
-    var updated = ship
-    inc updated.progress
-    if updated.progress >= updated.duration:
-      sim.resolveShipArrival(updated)
+    if ship.launchDelay > 0:
+      activeShips.add ship
+      continue
+    let targetIndex = sim.findPlanetIndexById(ship.targetPlanet)
+    if targetIndex < 0:
+      continue
+    let
+      dx = sim.planets[targetIndex].x * SubpixelScale - ship.posX
+      dy = sim.planets[targetIndex].y * SubpixelScale - ship.posY
+      reach = sim.planets[targetIndex].radius * SubpixelScale
+    # A long-lived ship is force-landed so a crowded target can never
+    # leave one circling forever.
+    if dx * dx + dy * dy <= reach * reach or
+        ship.progress > ship.duration * 3 + TargetFps * 10:
+      sim.resolveShipArrival(ship)
     else:
-      activeShips.add updated
+      activeShips.add ship
   sim.ships = move(activeShips)
 
 proc stepGrowth(sim: var SimServer) {.measure.} =
@@ -814,6 +1127,19 @@ proc applyInput*(
   sim.ensureSelection(playerIndex)
   if sim.players[playerIndex].sendCooldown > 0:
     dec sim.players[playerIndex].sendCooldown
+  # Mouse play: place the cursor, take the chosen send size, then run the
+  # clicks that arrived this tick.
+  if input.hasCursor:
+    sim.players[playerIndex].cursorX =
+      worldClampPixel(input.cursorX, WorldWidthPixels - 1)
+    sim.players[playerIndex].cursorY =
+      worldClampPixel(input.cursorY, WorldHeightPixels - 1)
+  if input.sendPercent > 0:
+    sim.players[playerIndex].sendPercent = clamp(input.sendPercent, 10, 100)
+  if input.commandCount > 0:
+    sim.pruneSelection(playerIndex)
+    for i in 0 ..< min(input.commandCount, input.commands.len):
+      sim.applyPlayerCommand(playerIndex, input.commands[i])
   var
     inputX = 0
     inputY = 0
@@ -975,6 +1301,10 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ship.ownerId)
     result.mixHashInt(ship.targetPlanet)
     result.mixHashInt(ship.progress)
+    result.mixHashInt(ship.posX)
+    result.mixHashInt(ship.posY)
+    result.mixHashInt(int(ship.heading))
+    result.mixHashInt(ship.launchDelay)
 
 proc playerScoresJson*(sim: SimServer): string {.measure.} =
   ## Builds the current per-player score JSON.

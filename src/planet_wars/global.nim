@@ -1,5 +1,5 @@
 import
-  std/algorithm,
+  std/algorithm, std/tables,
   bitworld/pixelfonts, bitworld/profile,
   bitworld/spriteprotocol, bitworld/sprites, sim
 
@@ -19,6 +19,7 @@ const
   ScorePanelDigitSpriteBase = 18300
   ScorePanelChipSpriteBase = 18400
   ScorePanelNameSpriteBase = 18500
+  HudLabelSpriteBase = 18700
   PlanetObjectBase = 2000
   PlanetSelectedObjectBase = 2100
   PlanetOriginObjectBase = 2200
@@ -30,7 +31,11 @@ const
   PlanetTextZBase = WorldHeightPixels * 3
   PlayerNameZBase = WorldHeightPixels * 4
   ChatBubbleZBase = WorldHeightPixels * 5
-  HudObjectId = 4000
+  HudLabelObjectBase = 4700
+  HudDigitObjectBase = 4710
+  HudMaxValueChars = 12
+  HudLabelGapX = 3
+  HudLabels = ["SCORE", "PLANETS"]
   WaitingObjectId = 4002
   InterstitialObjectId = 4003
   ChatObjectBase = 4010
@@ -38,7 +43,18 @@ const
   ScorePanelDigitObjectBase = 15000
   ScorePanelNameObjectBase = 17000
   PlanetSpritePad = 4
-  ShipSpriteSize = 5
+  ## Planet Wars input tags, outside bitworld's 0x81..0x87 range.
+  PlanetWarsClick* = 0xA0'u8
+  PlanetWarsPercent* = 0xA1'u8
+  PlanetWarsHover* = 0xA2'u8
+  ## Ships are drawn at this multiple of the base shape, and each plotted
+  ## point becomes a block of the same size so the hull stays solid
+  ## instead of breaking into scattered pixels.
+  ShipSpriteScale = 3
+  ShipSpriteSize = 7 * ShipSpriteScale
+  ## Sprites covering the 256 headings. Sixteen reads as smooth turning
+  ## while staying far inside the id space before the cursor sprites.
+  ShipDirectionCount = 16
   CursorSpriteSize = 5
   ChatBubblePad = 3
   ChatBubblePointerHeight = 3
@@ -96,6 +112,7 @@ type
     x: int
     y: int
     z: int
+    layer: int
     spriteId: int
 
   PlayerSpriteKey = object
@@ -110,6 +127,7 @@ type
   GlobalViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    worldObjects*: Table[int, WorldSpriteObject]
     playerSpriteKeys: seq[PlayerSpriteKey]
     playerNameKeys: seq[PlayerTextSpriteKey]
     planetTextDigitsDefined: bool
@@ -135,12 +153,20 @@ type
   PlayerViewerState* = object
     initialized*: bool
     objectIds*: seq[int]
+    worldObjects*: Table[int, WorldSpriteObject]
     playerSpriteKeys: seq[PlayerSpriteKey]
     playerNameKeys: seq[PlayerTextSpriteKey]
     planetTextDigitsDefined: bool
     waitingSpriteDefined: bool
-    hudText: string
+    hudLabelsDefined: bool
     interstitialKey: string
+    ## Mouse input, accumulated between ticks and drained by the sim.
+    pointerX*: int
+    pointerY*: int
+    hasPointer*: bool
+    sendPercent*: int
+    pendingCount*: int
+    pending*: array[4, PlayerCommand]
 
 proc initGlobalViewerState*(): GlobalViewerState =
   ## Returns the default state for one global protocol viewer.
@@ -197,14 +223,22 @@ proc addWorldObject(
     x: x,
     y: y,
     z: z,
+    layer: MapLayerId,
     spriteId: spriteId
   ))
 
 proc flushWorldObjects(
   packet: var seq[uint8],
-  objects: var seq[WorldSpriteObject]
+  objects: var seq[WorldSpriteObject],
+  previous: Table[int, WorldSpriteObject],
+  next: var Table[int, WorldSpriteObject]
 ) {.measure.} =
-  ## Sends queued world objects in stable draw order.
+  ## Sends world objects that changed since the viewer's last packet.
+  ##
+  ## Real depth goes on the wire rather than the post-sort index, because an
+  ## index shifts whenever any other object appears or leaves, which would
+  ## make almost every object look changed. Both clients sort by (z, y, id)
+  ## themselves, so the draw order is identical either way.
   objects.sort(
     proc(a, b: WorldSpriteObject): int =
       result = cmp(a.z, b.z)
@@ -213,8 +247,14 @@ proc flushWorldObjects(
       if result == 0:
         result = cmp(a.id, b.id)
   )
-  for i, item in objects:
-    packet.addObject(item.id, item.x, item.y, i, MapLayerId, item.spriteId)
+  for item in objects:
+    next[item.id] = item
+    let seen = previous.getOrDefault(item.id, WorldSpriteObject(id: -1))
+    if seen == item:
+      continue
+    packet.addObject(
+      item.id, item.x, item.y, item.z, item.layer, item.spriteId
+    )
 
 proc planetSpriteRadius(size: PlanetSize): int =
   ## Returns the rendered sprite radius for one planet size.
@@ -238,7 +278,7 @@ proc planetOriginSpriteId(size: PlanetSize): int =
 
 proc playerShipSpriteId(playerId, direction: int): int =
   ## Returns the sprite id for one player's ship and direction.
-  PlayerShipSpriteBase + playerId * 4 + direction
+  PlayerShipSpriteBase + playerId * ShipDirectionCount + direction
 
 proc playerCursorSpriteId(playerId: int): int =
   ## Returns the sprite id for one player's cursor.
@@ -257,20 +297,13 @@ proc planetTextDigitObjectId(planetId, digitIndex: int): int =
   PlanetTextObjectBase + planetId * PlanetTextMaxChars + digitIndex
 
 proc shipDirection(ship: Ship): int =
-  ## Returns the dominant direction index for one moving ship.
-  let
-    dx = ship.endX - ship.startX
-    dy = ship.endY - ship.startY
-  if abs(dx) >= abs(dy):
-    if dx >= 0:
-      0
-    else:
-      1
-  else:
-    if dy >= 0:
-      2
-    else:
-      3
+  ## Returns the sprite direction for one moving ship. Ships steer, so
+  ## this follows the live heading rather than the line it set out on.
+  ## Each sprite claims an equal slice of the 256 headings, centred on
+  ## its own orientation.
+  let half = HeadingCount div (ShipDirectionCount * 2)
+  ((int(ship.heading) + half) and (HeadingCount - 1)) div
+    (HeadingCount div ShipDirectionCount)
 
 proc buildPlanetSprite(size: PlanetSize, color: RgbaColor): RgbaSprite =
   ## Builds one planet base sprite.
@@ -298,34 +331,36 @@ proc buildPlanetRingSprite(size: PlanetSize, color: RgbaColor): RgbaSprite =
   result.drawCircleRing(center, center, spriteRadius - 1, 1, color)
 
 proc buildShipSprite(color: RgbaColor, direction: int): RgbaSprite =
-  ## Builds one small directional ship sprite.
+  ## Builds one directional ship sprite: a bright nose, a body behind it,
+  ## and a pair of stubby wings. The shape is derived from the heading so
+  ## all sixteen orientations come from one piece of code.
   result = newRgbaSprite(ShipSpriteSize, ShipSpriteSize)
-  let c = ShipSpriteSize div 2
-  case direction
-  of 0:
-    result.putRgbaPixel(c + 2, c, ScoreColor)
-    result.putRgbaPixel(c + 1, c, color)
-    result.putRgbaPixel(c, c - 1, color)
-    result.putRgbaPixel(c, c, color)
-    result.putRgbaPixel(c, c + 1, color)
-  of 1:
-    result.putRgbaPixel(c - 2, c, ScoreColor)
-    result.putRgbaPixel(c - 1, c, color)
-    result.putRgbaPixel(c, c - 1, color)
-    result.putRgbaPixel(c, c, color)
-    result.putRgbaPixel(c, c + 1, color)
-  of 2:
-    result.putRgbaPixel(c, c + 2, ScoreColor)
-    result.putRgbaPixel(c, c + 1, color)
-    result.putRgbaPixel(c - 1, c, color)
-    result.putRgbaPixel(c, c, color)
-    result.putRgbaPixel(c + 1, c, color)
-  else:
-    result.putRgbaPixel(c, c - 2, ScoreColor)
-    result.putRgbaPixel(c, c - 1, color)
-    result.putRgbaPixel(c - 1, c, color)
-    result.putRgbaPixel(c, c, color)
-    result.putRgbaPixel(c + 1, c, color)
+  let
+    centre = ShipSpriteSize div 2
+    heading = uint8((direction * HeadingCount) div ShipDirectionCount)
+    forwardX = cosHeading(heading)
+    forwardY = sinHeading(heading)
+  proc plot(sprite: var RgbaSprite, alongScale, sideScale: int,
+      pixel: RgbaColor) =
+    ## Places one pixel at a position given along and across the heading.
+    let
+      x = centre + (forwardX * alongScale - forwardY * sideScale) *
+        ShipSpriteScale div (TrigScale * 2)
+      y = centre + (forwardY * alongScale + forwardX * sideScale) *
+        ShipSpriteScale div (TrigScale * 2)
+    for blockY in 0 ..< ShipSpriteScale:
+      for blockX in 0 ..< ShipSpriteScale:
+        let
+          px = x + blockX
+          py = y + blockY
+        if px >= 0 and py >= 0 and px < ShipSpriteSize and
+            py < ShipSpriteSize:
+          sprite.putRgbaPixel(px, py, pixel)
+  result.plot(0, 0, color)
+  result.plot(-2, 0, color)
+  result.plot(-4, 2, color)
+  result.plot(-4, -2, color)
+  result.plot(4, 0, ScoreColor)
 
 proc buildCursorSprite(color: RgbaColor): RgbaSprite =
   ## Builds a 5 by 5 cross cursor with a transparent center.
@@ -814,6 +849,71 @@ proc drainReplayViewerInput*(
     commands.add(command)
   state.replayCommands.setLen(0)
 
+proc readI16At(message: string, offset: int): int =
+  ## Reads one little endian signed 16 bit value.
+  let value = uint16(message[offset].uint8) or
+    (uint16(message[offset + 1].uint8) shl 8)
+  int(cast[int16](value))
+
+proc initPlayerSendPercent*(state: var PlayerViewerState) =
+  ## Seeds the send size so a player who never presses a number key still
+  ## sends the documented default.
+  if state.sendPercent == 0:
+    state.sendPercent = DefaultSendPercent
+
+proc applyPlanetWarsInput*(
+  state: var PlayerViewerState,
+  message: string
+): bool =
+  ## Parses the Planet Wars input protocol, which is deliberately separate
+  ## from bitworld's button and mouse messages so the game can carry
+  ## modifiers, a send percentage and select-all without changing the
+  ## shared protocol. Returns true when the message was ours.
+  if message.len == 0:
+    return false
+  state.initPlayerSendPercent()
+  case message[0].uint8
+  of PlanetWarsClick:
+    if message.len < 6:
+      return true
+    if state.pendingCount < state.pending.len:
+      let action = message[5].uint8
+      state.pending[state.pendingCount] = PlayerCommand(
+        kind:
+          case action
+          of 0'u8: CommandClick
+          of 1'u8: CommandShiftClick
+          of 2'u8: CommandSelectAll
+          else: CommandNone,
+        x: message.readI16At(1),
+        y: message.readI16At(3)
+      )
+      inc state.pendingCount
+    true
+  of PlanetWarsPercent:
+    if message.len >= 2:
+      state.sendPercent = clamp(int(message[1].uint8), 10, 100)
+    true
+  of PlanetWarsHover:
+    if message.len >= 5:
+      state.pointerX = message.readI16At(1)
+      state.pointerY = message.readI16At(3)
+      state.hasPointer = true
+    true
+  else:
+    false
+
+proc takePlayerInput*(state: var PlayerViewerState): PlayerInput =
+  ## Drains accumulated mouse input into one tick of simulation input.
+  result.hasCursor = state.hasPointer
+  result.cursorX = state.pointerX
+  result.cursorY = state.pointerY
+  result.sendPercent = state.sendPercent
+  result.commandCount = state.pendingCount
+  for i in 0 ..< state.pendingCount:
+    result.commands[i] = state.pending[i]
+  state.pendingCount = 0
+
 proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
   message: string,
@@ -821,7 +921,8 @@ proc applyPlayerViewerMessage*(
   chatText: var string
 ) =
   ## Applies sprite-player input messages.
-  discard state
+  if state.applyPlanetWarsInput(message):
+    return
   for item in message.parseSpriteClientMessages():
     case item.kind
     of SpriteClientChatMessage:
@@ -905,7 +1006,7 @@ proc addPlayerSpriteDefinitions(
         planet.pixels,
         "player planet"
       )
-    for direction in 0 ..< 4:
+    for direction in 0 ..< ShipDirectionCount:
       let ship = buildShipSprite(player.color, direction)
       packet.addSprite(
         playerShipSpriteId(player.id, direction),
@@ -939,7 +1040,7 @@ proc buildSpriteProtocolPlayerInit(sim: SimServer): seq[uint8] {.measure.} =
   result = @[]
   result.addClearObjects()
   result.addLayer(MapLayerId, MapLayerType, ZoomableLayerFlag)
-  result.addViewport(MapLayerId, PlayerViewportWidth, PlayerViewportHeight)
+  result.addViewport(MapLayerId, WorldWidthPixels, WorldHeightPixels)
   result.addLayer(TopLeftLayerId, TopLeftLayerType, UiLayerFlag)
   result.addViewport(TopLeftLayerId, PlayerViewportWidth, PlayerUiHeight)
   result.addCommonSpriteDefinitions(sim)
@@ -994,7 +1095,15 @@ proc addPlanetObjects(
         viewportWidth,
         viewportHeight
       )
-    if i == selectedIndex or planet.id == selectedPlanetId:
+    # Every planet held for the next send gets a ring, so a multi-planet
+    # selection is visible rather than guessed at.
+    var selectedForSend = planet.id == selectedPlanetId
+    if not selectedForSend and viewerId > 0:
+      for player in sim.players:
+        if player.id == viewerId:
+          selectedForSend = planet.id in player.selectedPlanetIds
+          break
+    if selectedForSend:
       objects.addWorldObject(
         currentIds,
         PlanetSelectedObjectBase + planet.id,
@@ -1232,6 +1341,8 @@ proc addWorldObjects(
   packet: var seq[uint8],
   playerNameKeys: var seq[PlayerTextSpriteKey],
   currentIds: var seq[int],
+  previousObjects: Table[int, WorldSpriteObject],
+  nextObjects: var Table[int, WorldSpriteObject],
   viewerId,
   selectedIndex,
   originIndex,
@@ -1244,14 +1355,14 @@ proc addWorldObjects(
   ## Adds all visible world objects to a protocol packet.
   var objects: seq[WorldSpriteObject] = @[]
   currentIds.add(MapObjectId)
-  packet.addObject(
-    MapObjectId,
-    -cameraX,
-    -cameraY,
-    low(int16),
-    MapLayerId,
-    MapSpriteId
-  )
+  objects.add(WorldSpriteObject(
+    id: MapObjectId,
+    x: -cameraX,
+    y: -cameraY,
+    z: low(int16),
+    layer: MapLayerId,
+    spriteId: MapSpriteId
+  ))
   sim.addPlanetObjects(
     objects,
     currentIds,
@@ -1303,43 +1414,80 @@ proc addWorldObjects(
     viewportWidth,
     viewportHeight
   )
-  packet.flushWorldObjects(objects)
+  packet.flushWorldObjects(objects, previousObjects, nextObjects)
+
+proc addPlayerHudLabelSprites(
+  sim: SimServer,
+  packet: var seq[uint8]
+) {.measure.} =
+  ## Adds the immutable player HUD label sprites.
+  for i, label in HudLabels:
+    let sprite = sim.buildTextSprite([label], ScoreColor, false)
+    packet.addSprite(
+      HudLabelSpriteBase + i,
+      sprite.width,
+      sprite.height,
+      sprite.pixels,
+      "hud label " & label
+    )
 
 proc addPlayerHud(
   sim: SimServer,
   packet: var seq[uint8],
-  hudText: var string,
+  labelsDefined: var bool,
   currentIds: var seq[int],
+  previousObjects: Table[int, WorldSpriteObject],
+  nextObjects: var Table[int, WorldSpriteObject],
   playerIndex: int
 ) {.measure.} =
   ## Adds the player score HUD.
+  ##
+  ## The score moves almost every tick, so rasterizing the HUD into one
+  ## sprite re-uploaded a few hundred bytes of bitmap every frame. Labels
+  ## are static and the digits are ten shared sprites, so a changed score
+  ## now costs one 12 byte object message per digit that actually differs.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
+  if not labelsDefined:
+    # The player view has no score panel, so the shared digit sprites the
+    # HUD draws with have to be defined here too.
+    sim.addScorePanelDigitSprites(packet)
+    sim.addPlayerHudLabelSprites(packet)
+    labelsDefined = true
   let
     player = sim.players[playerIndex]
     planets = sim.countOwnedPlanets(player.id)
-    scoreLine = "SCORE " & $player.score
-    planetLine = "PLANETS " & $planets
-    key = scoreLine & "\n" & planetLine
-  if hudText != key:
-    let sprite = sim.buildTextSprite([scoreLine, planetLine], ScoreColor, true)
-    packet.addSprite(
-      HudSpriteId,
-      sprite.width,
-      sprite.height,
-      sprite.pixels,
-      "hud"
-    )
-    hudText = key
-  packet.addObject(
-    HudObjectId,
-    0,
-    HudY,
-    high(int16),
-    TopLeftLayerId,
-    HudSpriteId
-  )
-  currentIds.add(HudObjectId)
+    lineHeight = sim.textFont.height + 1
+  var objects: seq[WorldSpriteObject] = @[]
+  for line, value in [player.score, planets]:
+    let
+      rowY = HudY + line * lineHeight
+      labelObjectId = HudLabelObjectBase + line
+    objects.add(WorldSpriteObject(
+      id: labelObjectId,
+      x: 0,
+      y: rowY,
+      z: high(int16),
+      layer: TopLeftLayerId,
+      spriteId: HudLabelSpriteBase + line
+    ))
+    currentIds.add(labelObjectId)
+    var digitX = sim.textFont.textWidth(HudLabels[line]) + HudLabelGapX
+    for i, ch in $value:
+      if i >= HudMaxValueChars or ch < '0' or ch > '9':
+        continue
+      let digitObjectId = HudDigitObjectBase + line * HudMaxValueChars + i
+      objects.add(WorldSpriteObject(
+        id: digitObjectId,
+        x: digitX,
+        y: rowY,
+        z: high(int16),
+        layer: TopLeftLayerId,
+        spriteId: scorePanelDigitSpriteId(ch)
+      ))
+      currentIds.add(digitObjectId)
+      digitX += sim.textFont.glyphAdvance(ch)
+  packet.flushWorldObjects(objects, previousObjects, nextObjects)
 
 proc addWaitingText(
   sim: SimServer,
@@ -1363,8 +1511,8 @@ proc addWaitingText(
     waitingSpriteDefined = true
   packet.addObject(
     WaitingObjectId,
-    max(0, (PlayerViewportWidth - width) div 2),
-    max(0, (PlayerViewportHeight - height) div 2),
+    max(0, (WorldWidthPixels - width) div 2),
+    max(0, (WorldHeightPixels - height) div 2),
     high(int16),
     MapLayerId,
     WaitingSpriteId
@@ -1502,14 +1650,15 @@ proc buildSpriteProtocolPlayerUpdates*(
     nextState.planetTextDigitsDefined = true
   result.addPlayerSpriteDefinitions(nextState.playerSpriteKeys, sim)
   var currentIds: seq[int] = @[]
+  var nextObjects: Table[int, WorldSpriteObject]
   if playerIndex < 0 or playerIndex >= sim.players.len:
     if sim.waitingForPlayers:
       sim.addWaitingForPlayersOverlay(
         result,
         nextState.interstitialKey,
         currentIds,
-        PlayerViewportWidth,
-        PlayerViewportHeight
+        WorldWidthPixels,
+        WorldHeightPixels
       )
     else:
       sim.addWaitingText(
@@ -1519,34 +1668,30 @@ proc buildSpriteProtocolPlayerUpdates*(
       )
   else:
     var ownedSim = sim
-    ownedSim.ensureSelection(playerIndex)
-    let
-      player = ownedSim.players[playerIndex]
-      cameraX = worldClampPixel(
-        player.cursorX - PlayerViewportWidth div 2,
-        WorldWidthPixels - PlayerViewportWidth
-      )
-      cameraY = worldClampPixel(
-        player.cursorY - PlayerViewportHeight div 2,
-        WorldHeightPixels - PlayerViewportHeight
-      )
+    let player = ownedSim.players[playerIndex]
+    # Every player sees the whole board. There is no camera and nothing is
+    # culled, so the view never scrolls and never hides a planet.
     ownedSim.addWorldObjects(
       result,
       nextState.playerNameKeys,
       currentIds,
+      state.worldObjects,
+      nextObjects,
       player.id,
       player.selectedPlanet,
       player.originPlanet,
       -1,
-      cameraX,
-      cameraY,
-      PlayerViewportWidth,
-      PlayerViewportHeight
+      0,
+      0,
+      WorldWidthPixels,
+      WorldHeightPixels
     )
     ownedSim.addPlayerHud(
       result,
-      nextState.hudText,
+      nextState.hudLabelsDefined,
       currentIds,
+      state.worldObjects,
+      nextObjects,
       playerIndex
     )
     if sim.waitingForPlayers:
@@ -1554,13 +1699,14 @@ proc buildSpriteProtocolPlayerUpdates*(
         result,
         nextState.interstitialKey,
         currentIds,
-        PlayerViewportWidth,
-        PlayerViewportHeight
+        WorldWidthPixels,
+        WorldHeightPixels
       )
   for objectId in state.objectIds:
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
   nextState.objectIds = currentIds
+  nextState.worldObjects = nextObjects
 
 proc blitText(
   sim: SimServer,
@@ -1835,10 +1981,13 @@ proc buildSpriteProtocolUpdates*(
     nextState.planetTextDigitsDefined = true
   result.addPlayerSpriteDefinitions(nextState.playerSpriteKeys, sim)
   var currentIds: seq[int] = @[]
+  var nextObjects: Table[int, WorldSpriteObject]
   sim.addWorldObjects(
     result,
     nextState.playerNameKeys,
     currentIds,
+    state.worldObjects,
+    nextObjects,
     0,
     -1,
     -1,
@@ -1873,3 +2022,4 @@ proc buildSpriteProtocolUpdates*(
     if objectId notin currentIds:
       result.addDeleteObject(objectId)
   nextState.objectIds = currentIds
+  nextState.worldObjects = nextObjects

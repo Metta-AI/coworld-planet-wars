@@ -4,3 +4,6 @@ out/
 /planet_wars
 /players/skurge/skurge
 nim.cfg
+*.deps
+*.dot
+/tests/tests

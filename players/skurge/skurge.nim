@@ -12,6 +12,8 @@ const
   PlayerShipSpriteBase = 2000
   PlayerCursorSpriteBase = 5000
   PlanetTextSpriteBase = 10000
+  PlanetTextDigitSpriteBase = 10000
+  PlanetTextMaxChars = 8
   PlanetObjectBase = 2000
   PlanetSelectedObjectBase = 2100
   PlanetOriginObjectBase = 2200
@@ -23,15 +25,90 @@ const
   OriginSelectInterval = 8
   RetargetTicks = TargetFps * 3
   SweepArrivalRadius = 18
-  HomePreferredShips = 20
   OriginReserveShips = 1
-  SendBurstMaxShips = 999
-  SendBurstUnknownOriginShips = 72
+  # A burst pins the cursor, which is the scarcest resource, so cap how
+  # long one capture may hold it. Eight seconds measurably lost ground
+  # to three; the bounded garrison keeps bursts short enough anyway.
   SendBurstMaxHoldTicks = TargetFps * 3
-  SendBurstPaddingTicks = TargetFps div 3
-  NearbyTargetDistance = 104
-  EnemyTakeMargin = 4
-  TargetShipScoreWeight = 8
+  SendBurstPaddingTicks = 4
+  EnemyTakeMargin = 5
+  NeutralTakeMargin = 1
+  UnknownShipGuess = 12
+  UnknownGrowthTicks = 150
+  # One ship of capture cost is worth this many pixels of travel.
+  ShipCostWeight = 25
+  SmallPlanetRadius = 9
+  # A large planet grows ships about twice as fast as a small one, but
+  # planet count compounds faster than growth does, so the bonus stays
+  # bounded: it is worth a short detour, never a change of plan.
+  MissionTimeoutTicks = TargetFps * 8
+  # Consecutive bursts from one origin that capture nothing before the
+  # origin is written off. Outcome-based, so unlike ship accounting it
+  # cannot drift when an enemy stream throttles the planet unseen.
+  MaxOriginFailStreak = 2
+  OriginAvoidTicks = TargetFps * 20
+  # Finish the kill instead of abandoning a burst one ship short, but
+  # bound it so a regrowing enemy cannot extend the mission forever.
+  FinishKillShips = 3
+  FinishKillExtendTicks = TargetFps div 2
+  MaxMissionTicks = TargetFps * 25
+  # A burst this small cannot flip anything, and each one costs a
+  # cursor trip, so accumulate instead of dribbling single ships.
+  MinPressureShips = 3
+  # Captures one claimed origin should fund before relocating.
+  SpreeCaptures = 1
+  # How long to stand on a planet whose capture is still in flight.
+  ArrivalWaitTicks = TargetFps * 3
+  # Send only what the capture needs. Garrisoning ships forward drains
+  # the origin below the next capture's cost, which breaks the chain and
+  # forces a 141px trip to find ships; measured origins arrive with ~20
+  # ships against a ~9 cost, so a lean burst buys a second capture free.
+  MaxGarrisonShips = 0
+  # Rivals holding at most this many planets are worth hunting down.
+  EliminationThreshold = 5
+  # Per-planet edge over a weaker rival, steering attacks toward
+  # whoever is already losing so rivals fall one at a time.
+  # Neutrals never regrow, so ships spent on them are banked rather
+  # than burned. Worth a real discount, but not an absolute veto:
+  # a neighbouring enemy beats a neutral across the whole map.
+  # Target preferences, on the same scale as a wave's cost so they bias
+  # the ranking without overriding it. The d-pad bot's equivalents were
+  # thousands against a cost term of tens, which made ship cost
+  # irrelevant; they were tuned when a capture cost a cursor trip and
+  # captures were rare, and that no longer prices anything real.
+  # Sprite radii as the bot sees them, one per planet size. The old
+  # SmallPlanetRadius of 9 was the *gameplay* radius, so every planet
+  # cleared it and the large-planet bonus was silently a no-op.
+  MediumSpriteRadius = 15
+  LargeSpriteRadius = 18
+  ## Opening plan: pool everything, take cheap neighbours until the
+  ## economy is wide enough to fund the large planets.
+  OpeningPlanetTarget = 6
+  OpeningMaxNeutralShips = 10
+  ## Every wave is a full commitment; a planet always keeps one ship.
+  FleetPercent = 100
+  NeutralPreference = 200
+  LargePlanetPreference = 120
+  EliminationPreference = 300
+  WeakRivalPreference = 60
+  ## Planet Wars input tags, matching src/planet_wars/global.nim.
+  PlanetWarsClick = 0xA0'u8
+  PlanetWarsPercent = 0xA1'u8
+  ClickPlain = 0'u8
+  ClickSelectAll = 2'u8
+  MinSendPercent = 10
+  MaxSendPercent = 100
+  SendPercentStep = 10
+  # A send decrements the origin server-side at once and the new count
+  # arrives on the next packet, so one tick is enough to avoid spending
+  # the same ships twice. Anything longer just idles planets that could
+  # already be launching.
+  WaveCooldownTicks = 1
+  # Ships already flying at a target still count against its defence, so
+  # they are remembered until they land. Without this the planner keeps
+  # re-buying a planet it has already paid for, which serializes the
+  # whole expansion behind one capture at a time.
+  CommitmentSlackTicks = TargetFps
   SweepPoints = [
     (x: 18, y: 18),
     (x: WorldWidthPixels - 18, y: 18),
@@ -51,9 +128,21 @@ type
     SpriteCursor
     SpriteText
 
-  BotMode = enum
-    ModeHome
-    ModeExplore
+  BotPhase = enum
+    PhaseOpening    ## Pool everything at the nearest cheap neutrals.
+    PhaseBigPlanets ## Pool everything at the large planets.
+    PhaseSnake      ## Roll one stack over the nearest neutral, forever.
+
+  Wave = object
+    sourceId: int
+    targetId: int
+    percent: int
+
+  BotCommand = object
+    kind: uint8
+    x: int
+    y: int
+    percent: int
 
   SpriteInfo = object
     defined: bool
@@ -80,6 +169,8 @@ type
     ships: int
     x: int
     y: int
+    radius: int
+    seenTick: int
     selected: bool
     origin: bool
 
@@ -87,6 +178,8 @@ type
     sprites: seq[SpriteInfo]
     objects: seq[ObjectState]
     knownPlanets: seq[PlanetSight]
+    shipDebits: seq[int]
+    steerAxisHorizontal: bool
     rng: Rand
     cameraX: int
     cameraY: int
@@ -99,19 +192,13 @@ type
     originPlanetId: int
     lastSelectedPlanetId: int
     selectionStuckTicks: int
-    currentTargetId: int
-    targetStartedTick: int
-    avoidedTargetId: int
-    avoidUntilTick: int
-    mode: BotMode
-    launchOriginId: int
-    launchOriginShips: int
-    sendTargetId: int
-    sendOriginId: int
-    sendUntilTick: int
-    sweepIndex: int
+    phase: BotPhase
+    waveCooldownUntil: int
+    committedShips: seq[int]
+    commitmentExpiry: seq[int]
+    lastWave: Wave
+    sweptAtTick: int
     intent: string
-    lastMask: uint8
 
 proc readU16(blob: string, offset: int): int =
   ## Reads one little endian unsigned 16 bit value.
@@ -312,18 +399,8 @@ proc applySpritePacket(bot: var Bot, packet: string): bool =
       bot.colorAnnounced = false
       bot.selectedPlanetId = -1
       bot.originPlanetId = -1
-      bot.lastSelectedPlanetId = -1
-      bot.selectionStuckTicks = 0
-      bot.currentTargetId = -1
-      bot.targetStartedTick = -RetargetTicks
-      bot.avoidedTargetId = -1
-      bot.avoidUntilTick = 0
-      bot.mode = ModeHome
-      bot.launchOriginId = -1
-      bot.launchOriginShips = 0
-      bot.sendTargetId = -1
-      bot.sendOriginId = -1
-      bot.sendUntilTick = 0
+      bot.waveCooldownUntil = 0
+      bot.lastWave = Wave(sourceId: -1, targetId: -1, percent: 0)
     of 0x05:
       if offset + 5 > packet.len:
         return false
@@ -346,23 +423,21 @@ proc objectPresent(bot: Bot, objectId: int): bool =
   ## Returns true when one object exists in the current sprite scene.
   objectId >= 0 and objectId < bot.objects.len and bot.objects[objectId].present
 
-proc parseShips(label: string): int =
-  ## Parses a dynamic ship-count sprite label.
-  const Prefix = "ships "
-  if not label.startsWith(Prefix):
-    return -1
-  try:
-    parseInt(label.substr(Prefix.len))
-  except ValueError:
-    -1
-
 proc planetShips(bot: Bot, planetId: int): int =
-  ## Returns the visible ship count for one planet id.
-  let textId = PlanetTextObjectBase + planetId
-  if not bot.objectPresent(textId):
+  ## Reads a planet's ship count from its per-digit text objects.
+  var text = ""
+  for digitIndex in 0 ..< PlanetTextMaxChars:
+    let objectId = PlanetTextObjectBase +
+      planetId * PlanetTextMaxChars + digitIndex
+    if not bot.objectPresent(objectId):
+      continue
+    let digit = bot.objects[objectId].spriteId - PlanetTextDigitSpriteBase
+    if digit < 0 or digit > 9:
+      continue
+    text.add(char(ord('0') + digit))
+  if text.len == 0:
     return -1
-  let sprite = bot.spriteInfo(bot.objects[textId].spriteId)
-  sprite.label.parseShips()
+  parseInt(text)
 
 proc planetSight(bot: Bot, planetId: int): PlanetSight =
   ## Reads one visible planet from protocol objects.
@@ -382,6 +457,8 @@ proc planetSight(bot: Bot, planetId: int): PlanetSight =
     ships: bot.planetShips(planetId),
     x: bot.cameraX + objectState.x + sprite.width div 2,
     y: bot.cameraY + objectState.y + sprite.height div 2,
+    radius: sprite.width div 2,
+    seenTick: bot.frameTick,
     selected: bot.objectPresent(PlanetSelectedObjectBase + planetId),
     origin: bot.objectPresent(PlanetOriginObjectBase + planetId)
   )
@@ -397,9 +474,13 @@ proc rememberPlanets(bot: var Bot, planets: openArray[PlanetSight]) =
   ## Updates remembered planet sightings from the current viewport.
   if bot.knownPlanets.len <= MaxPlanetCount:
     bot.knownPlanets.setLen(MaxPlanetCount + 1)
+  if bot.shipDebits.len <= MaxPlanetCount:
+    bot.shipDebits.setLen(MaxPlanetCount + 1)
   for planet in planets:
     if planet.id >= 0 and planet.id < bot.knownPlanets.len:
       bot.knownPlanets[planet.id] = planet
+      if planet.ships >= 0:
+        bot.shipDebits[planet.id] = 0
 
 proc knownPlanetSights(bot: Bot): seq[PlanetSight] =
   ## Returns all remembered planet sightings.
@@ -408,19 +489,17 @@ proc knownPlanetSights(bot: Bot): seq[PlanetSight] =
       result.add(planet)
 
 proc updateIdentity(bot: var Bot, planets: openArray[PlanetSight]) =
-  ## Recognizes Skurge's player id and color from the origin planet.
+  ## Recognizes Skurge's player id and color from its own selection.
+  ##
+  ## The whole board is visible now, so no planet is identifiable by
+  ## position. Selection rings only ever appear on planets we own, so one
+  ## select-all click names every planet that is ours.
   for planet in planets:
-    if not planet.origin or planet.ownerId <= 0:
+    if not planet.selected or planet.ownerId <= 0:
       continue
-    if bot.ownPlayerId <= 0:
+    if bot.ownPlayerId != planet.ownerId:
       bot.ownPlayerId = planet.ownerId
       bot.colorAnnounced = false
-      bot.currentTargetId = -1
-      bot.sendTargetId = -1
-      bot.sendOriginId = -1
-      bot.sendUntilTick = bot.frameTick
-    if bot.ownPlayerId != planet.ownerId:
-      continue
     let sprite = bot.spriteInfo(
       bot.objects[PlanetObjectBase + planet.id].spriteId
     )
@@ -459,429 +538,420 @@ proc distanceSquared(ax, ay, bx, by: int): int =
     dy = ay - by
   dx * dx + dy * dy
 
-proc shipScore(planet: PlanetSight): int =
-  ## Returns a comparable ship score for targeting.
-  if planet.ships < 0:
-    return 99
-  planet.ships
-
-proc originShipScore(planet: PlanetSight): int =
-  ## Returns a comparable ship score for owned launch planets.
-  if planet.ships < 0:
-    return SendBurstUnknownOriginShips
-  planet.ships
-
-proc homeShipScore(planet: PlanetSight): int =
-  ## Returns a conservative ship score for choosing a home origin.
-  if planet.ships < 0:
+proc intSqrt(value: int): int =
+  ## Returns the integer square root of a non-negative value.
+  if value <= 0:
     return 0
-  planet.ships
+  var guess = value
+  var next = (guess + 1) div 2
+  while next < guess:
+    guess = next
+    next = (guess + value div guess) div 2
+  guess
 
-proc chooseHomeOrigin(
-  bot: Bot,
-  planets: openArray[PlanetSight]
-): PlanetSight =
-  ## Chooses the best owned planet to return home to.
-  var
-    bestPreferredShips = -1
-    bestFallbackShips = -1
-  for planet in planets:
-    if planet.ownerId != bot.ownPlayerId:
-      continue
-    let ships = planet.homeShipScore()
-    if ships >= HomePreferredShips and ships > bestPreferredShips:
-      result = planet
-      bestPreferredShips = ships
-    if bestPreferredShips < 0 and ships > bestFallbackShips:
-      result = planet
-      bestFallbackShips = ships
+proc distance(ax, ay, bx, by: int): int =
+  ## Returns the straight-line distance between two points.
+  intSqrt(distanceSquared(ax, ay, bx, by))
 
-proc cursorWorld(bot: Bot): tuple[x, y: int] =
-  ## Reads Skurge's visible cursor world position.
-  if bot.ownPlayerId > 0:
-    let objectId = CursorObjectBase + bot.ownPlayerId
-    if bot.objectPresent(objectId):
-      let
-        objectState = bot.objects[objectId]
-        sprite = bot.spriteInfo(objectState.spriteId)
-        width =
-          if sprite.defined:
-            sprite.width
-          else:
-            CursorSpriteSize
-        height =
-          if sprite.defined:
-            sprite.height
-          else:
-            CursorSpriteSize
-      return (
-        bot.cameraX + objectState.x + width div 2,
-        bot.cameraY + objectState.y + height div 2
-      )
-  (
-    bot.cameraX + PlayerViewportWidth div 2,
-    bot.cameraY + PlayerViewportHeight div 2
-  )
+proc cursorDistance(ax, ay, bx, by: int): int =
+  ## Returns how far the cursor must actually travel. The game accepts
+  ## one axis at a time, so movement is L-shaped and a diagonal hop
+  ## costs the sum of both legs, not the straight line.
+  abs(ax - bx) + abs(ay - by)
 
-proc plannedOriginShips(bot: Bot, origin: PlanetSight): int =
-  ## Returns the ship count this explore run should spend.
-  if bot.launchOriginId == origin.id and bot.launchOriginShips > 0:
-    return bot.launchOriginShips
-  origin.originShipScore()
-
-proc targetScore(origin, target: PlanetSight): int =
-  ## Scores one candidate target by distance and visible ship count.
-  distanceSquared(origin.x, origin.y, target.x, target.y) +
-    target.shipScore() * TargetShipScoreWeight +
-    target.id
-
-proc weakEnemyTarget(
-  bot: Bot,
-  origin: PlanetSight,
-  planets: openArray[PlanetSight],
-  nearbyOnly: bool
-): PlanetSight =
-  ## Chooses a nearby enemy that the origin can probably take.
-  let
-    originShips = bot.plannedOriginShips(origin)
-    available = max(1, originShips - OriginReserveShips)
-    nearbyDistanceSquared = NearbyTargetDistance * NearbyTargetDistance
-  var bestScore = high(int)
-  for planet in planets:
-    if planet.ownerId <= 0 or planet.ownerId == bot.ownPlayerId:
-      continue
-    let distance = distanceSquared(origin.x, origin.y, planet.x, planet.y)
-    if nearbyOnly and distance > nearbyDistanceSquared:
-      continue
-    if planet.ships >= 0 and planet.ships + EnemyTakeMargin > available:
-      continue
-    if planet.id == bot.avoidedTargetId and bot.frameTick < bot.avoidUntilTick:
-      continue
-    let score = origin.targetScore(planet)
-    if score < bestScore:
-      result = planet
-      bestScore = score
-
-proc neutralTarget(
-  bot: Bot,
-  origin: PlanetSight,
-  planets: openArray[PlanetSight],
-  nearbyOnly: bool
-): PlanetSight =
-  ## Chooses a neutral planet near the current origin.
-  let nearbyDistanceSquared = NearbyTargetDistance * NearbyTargetDistance
-  var bestScore = high(int)
-  for planet in planets:
-    if planet.ownerId != 0:
-      continue
-    let distance = distanceSquared(origin.x, origin.y, planet.x, planet.y)
-    if nearbyOnly and distance > nearbyDistanceSquared:
-      continue
-    if planet.id == bot.avoidedTargetId and bot.frameTick < bot.avoidUntilTick:
-      continue
-    let score = origin.targetScore(planet)
-    if score < bestScore:
-      result = planet
-      bestScore = score
-
-proc anyEnemyTarget(
-  bot: Bot,
-  origin: PlanetSight,
-  planets: openArray[PlanetSight]
-): PlanetSight =
-  ## Chooses any enemy when no weak enemy or neutral is known.
-  var bestScore = high(int)
-  for planet in planets:
-    if planet.ownerId <= 0 or planet.ownerId == bot.ownPlayerId:
-      continue
-    if planet.id == bot.avoidedTargetId and bot.frameTick < bot.avoidUntilTick:
-      continue
-    let score = origin.targetScore(planet)
-    if score < bestScore:
-      result = planet
-      bestScore = score
-
-proc chooseTargetFromOrigin(
-  bot: var Bot,
-  planets: openArray[PlanetSight],
-  origin: PlanetSight
-): PlanetSight =
-  ## Chooses the best outward target from one owned origin.
-  if bot.currentTargetId > 0 and
-      bot.frameTick - bot.targetStartedTick < RetargetTicks:
-    let current = planets.findPlanet(bot.currentTargetId)
-    if current.found and current.ownerId != bot.ownPlayerId:
-      return current
-  result = bot.weakEnemyTarget(origin, planets, true)
-  if not result.found:
-    result = bot.neutralTarget(origin, planets, true)
-  if not result.found:
-    result = bot.weakEnemyTarget(origin, planets, false)
-  if not result.found:
-    result = bot.neutralTarget(origin, planets, false)
-  if not result.found:
-    result = bot.anyEnemyTarget(origin, planets)
-  if result.found:
-    bot.currentTargetId = result.id
-    bot.targetStartedTick = bot.frameTick
-
-proc burstShipCount(origin, target: PlanetSight): int =
-  ## Estimates how many ships should be sent in one held burst.
-  let available =
-    if origin.ships < 0:
-      SendBurstUnknownOriginShips
-    else:
-      max(1, origin.ships - OriginReserveShips)
-  discard target
-  min(available, SendBurstMaxShips)
-
-proc botSendRepeatInterval(holdTicks: int): int =
-  ## Returns the game's send interval while B is held.
-  max(
-    MinSendRepeatInterval,
-    BaseSendRepeatInterval - holdTicks div SendAccelerationTicks
-  )
-
-proc burstTickCount(shipCount: int): int =
-  ## Converts a planned ship count into held-send ticks.
-  let plannedShips = max(1, shipCount)
-  var
-    sent = 0
-    holdTicks = 0
-    cooldown = 0
-  while sent < plannedShips and holdTicks < SendBurstMaxHoldTicks:
-    inc holdTicks
-    if cooldown > 0:
-      dec cooldown
-    if cooldown == 0:
-      inc sent
-      cooldown = botSendRepeatInterval(holdTicks)
-  min(SendBurstMaxHoldTicks, holdTicks + SendBurstPaddingTicks)
-
-proc startSendBurst(
-  bot: var Bot,
-  origin,
-  target: PlanetSight
-) =
-  ## Starts a held send burst from one origin to one target.
-  let shipCount = burstShipCount(origin, target)
-  bot.sendTargetId = target.id
-  bot.sendOriginId = origin.id
-  bot.sendUntilTick = bot.frameTick + burstTickCount(shipCount)
-
-proc axisSteerMask(dx, dy, deadband: int): uint8 =
-  ## Returns a single-axis movement mask toward one delta.
-  if abs(dx) <= deadband and abs(dy) <= deadband:
-    return 0
-  if abs(dx) >= abs(dy):
-    if dx < -deadband:
-      return ButtonLeft
-    if dx > deadband:
-      return ButtonRight
-  if dy < -deadband:
-    return ButtonUp
-  if dy > deadband:
-    return ButtonDown
-  if dx < -deadband:
-    return ButtonLeft
-  if dx > deadband:
-    return ButtonRight
-
-proc steerMask(bot: Bot, targetX, targetY: int): uint8 =
-  ## Builds d-pad input toward one world point.
-  let
-    cursor = bot.cursorWorld()
-    dx = targetX - cursor.x
-    dy = targetY - cursor.y
-  axisSteerMask(dx, dy, CursorDeadband)
-
-proc steerToPlanet(
-  bot: Bot,
-  planets: openArray[PlanetSight],
-  target: PlanetSight
-): uint8 =
-  ## Steers the visible cursor toward one planet.
-  discard planets
-  if bot.selectedPlanetId == target.id:
-    return
-  bot.steerMask(target.x, target.y)
-
-proc sweepMask(
-  bot: var Bot,
-  planets: openArray[PlanetSight]
-): uint8 =
-  ## Moves the cursor through the map when no target is visible.
-  discard planets
-  let
-    point = SweepPoints[bot.sweepIndex mod SweepPoints.len]
-    cursor = bot.cursorWorld()
-  if distanceSquared(cursor.x, cursor.y, point.x, point.y) <=
-      SweepArrivalRadius * SweepArrivalRadius:
-    inc bot.sweepIndex
-  let nextPoint = SweepPoints[bot.sweepIndex mod SweepPoints.len]
-  bot.intent = "sweep " & $bot.sweepIndex
-  bot.steerMask(nextPoint.x, nextPoint.y)
-
-proc opportunisticSendMask(
-  bot: Bot,
-  planets: openArray[PlanetSight],
-  mask: uint8
-): uint8 =
-  ## Holds send while steering if the current origin still has ships.
-  if mask == 0 or bot.selectedPlanetId == bot.originPlanetId:
-    return mask
-  let origin = planets.findPlanet(bot.originPlanetId)
-  if origin.found and origin.ownerId == bot.ownPlayerId and
-      (origin.ships < 0 or origin.ships > OriginReserveShips):
-    return mask or ButtonB
-  mask
-
-proc decideNextMask(bot: var Bot): uint8 =
-  ## Chooses the next controller mask from semantic sprite state.
-  bot.updateCamera()
-  let visiblePlanets = bot.visiblePlanets()
-  bot.rememberPlanets(visiblePlanets)
-  let knownPlanets = bot.knownPlanetSights()
-  bot.updateIdentity(visiblePlanets)
-  bot.selectedPlanetId = visiblePlanets.selectedPlanetId()
-  let visibleOriginId = visiblePlanets.originPlanetId()
-  if visibleOriginId > 0:
-    bot.originPlanetId = visibleOriginId
-  if bot.selectedPlanetId == bot.lastSelectedPlanetId:
-    inc bot.selectionStuckTicks
+proc growthIntervalTicks(radius: int): int =
+  ## Estimates a planet's ship growth interval from its visible radius.
+  if radius <= 9:
+    120
+  elif radius <= 11:
+    85
   else:
-    bot.lastSelectedPlanetId = bot.selectedPlanetId
-    bot.selectionStuckTicks = 0
+    60
 
-  if bot.colorKnown and not bot.colorAnnounced:
-    echo "skurge color ", bot.ownColor.colorHex(),
-      " player=", bot.ownPlayerId
-    bot.colorAnnounced = true
+proc shipDebit(bot: Bot, planetId: int): int =
+  ## Returns unreconciled ships already spent from one planet.
+  if planetId >= 0 and planetId < bot.shipDebits.len:
+    return bot.shipDebits[planetId]
+  0
 
+proc estimatedShips(bot: Bot, planet: PlanetSight): int =
+  ## Estimates a planet's current ship count from its last sighting.
+  if planet.ships < 0:
+    # Never read this planet's count. A fixed guess is badly wrong late,
+    # when stockpiles are huge, and under-sending wastes a whole burst,
+    # so grow the guess with the clock for planets somebody owns.
+    if planet.ownerId == 0:
+      return UnknownShipGuess
+    return UnknownShipGuess + bot.frameTick div UnknownGrowthTicks
+  if planet.ownerId == 0:
+    return max(0, planet.ships - bot.shipDebit(planet.id))
+  let elapsed = max(0, bot.frameTick - planet.seenTick)
+  max(
+    0,
+    planet.ships + elapsed div growthIntervalTicks(planet.radius) -
+      bot.shipDebit(planet.id)
+  )
+
+proc flightTicks(origin, target: PlanetSight): int =
+  ## Returns how long ships take to fly between two planets.
+  let travel = max(
+    abs(target.x - origin.x),
+    abs(target.y - origin.y)
+  )
+  (travel * TargetFps + ShipSpeedPixelsPerSecond - 1) div
+    ShipSpeedPixelsPerSecond
+
+proc captureCost(bot: Bot, target: PlanetSight): int =
+  ## Estimates the ships required to capture one target planet.
+  if target.ownerId == 0:
+    bot.estimatedShips(target) + NeutralTakeMargin
+  else:
+    bot.estimatedShips(target) + EnemyTakeMargin
+
+proc captureCostFrom(bot: Bot, origin, target: PlanetSight): int =
+  ## Capture cost including the ships an enemy grows while ours fly in.
+  ## Under-sending by that margin wastes the entire burst, because an
+  ## enemy planet keeps every ship it survives with.
+  result = bot.captureCost(target)
+  if target.ownerId > 0:
+    result += flightTicks(origin, target) div
+      growthIntervalTicks(target.radius)
+
+proc availableShips(bot: Bot, planet: PlanetSight): int =
+  ## Returns the ships one owned planet can spend without losing itself.
+  max(0, bot.estimatedShips(planet) - OriginReserveShips)
+
+proc ownerPlanetCount(
+  planets: openArray[PlanetSight],
+  ownerId: int
+): int =
+  ## Returns how many planets one player holds.
+  for planet in planets:
+    if planet.found and planet.ownerId == ownerId:
+      inc result
+
+proc committedAgainst(bot: Bot, planetId: int): int =
+  ## Returns ships already flying at one target and still expected.
+  if planetId < 0 or planetId >= bot.committedShips.len:
+    return 0
+  if bot.frameTick >= bot.commitmentExpiry[planetId]:
+    return 0
+  bot.committedShips[planetId]
+
+proc commit(bot: var Bot, target: PlanetSight, source: PlanetSight,
+    ships, flight: int) =
+  ## Records a wave so its ships are not bought twice.
+  if target.id < 0 or target.id >= bot.committedShips.len:
+    return
+  if bot.frameTick >= bot.commitmentExpiry[target.id]:
+    bot.committedShips[target.id] = 0
+  bot.committedShips[target.id] += ships
+  bot.commitmentExpiry[target.id] =
+    bot.frameTick + flight + CommitmentSlackTicks
+
+proc launchCount(ships, percent: int): int =
+  ## Returns how many ships one send actually launches.
+  min((ships * percent) div 100, max(0, ships - 1))
+
+proc sendPercentFor(ships, needed: int): int =
+  ## Returns the smallest send size that launches enough ships to take a
+  ## target, or zero when this planet cannot fund the capture at all.
+  ##
+  ## A planet always keeps one ship, so even a full send is capped, and
+  ## sending less than the cost wastes the whole wave: the target keeps
+  ## every ship it survives with.
+  if ships <= 1 or needed <= 0:
+    return 0
+  var percent = MinSendPercent
+  while percent <= MaxSendPercent:
+    if min((ships * percent) div 100, ships - 1) >= needed:
+      return percent
+    percent += SendPercentStep
+  0
+
+proc waveCost(
+  bot: Bot,
+  planets: openArray[PlanetSight],
+  source, target: PlanetSight,
+  needed: int
+): int =
+  ## Ranks one source-target pair, lower being better.
+  ##
+  ## Score is planet count squared, so two cheap captures beat one
+  ## expensive capture and cost leads the ranking. The bonuses below are
+  ## the weights the d-pad bot was tuned to; they carry over because they
+  ## price planets, not cursor travel.
+  result = needed * ShipCostWeight +
+    distance(source.x, source.y, target.x, target.y)
+  if target.radius > SmallPlanetRadius:
+    result -= LargePlanetPreference
+  if target.ownerId == 0:
+    # Neutrals never regrow, so ships spent on them are banked.
+    result -= NeutralPreference
+  else:
+    let held = planets.ownerPlanetCount(target.ownerId)
+    if held <= EliminationThreshold:
+      result -= EliminationPreference
+    result -= (EliminationThreshold - min(held, EliminationThreshold)) *
+      WeakRivalPreference
+
+proc planWave(bot: Bot, planets: openArray[PlanetSight]): Wave =
+  ## Picks the best capture available this tick.
+  ##
+  ## Every planet is visible and a wave is two clicks, so there is no
+  ## cursor to steer and no fog to remember: this is a plain allocation
+  ## of owned fleets to the targets they can actually take.
+  result = Wave(sourceId: -1, targetId: -1, percent: 0)
+  var bestCost = high(int)
+  for target in planets:
+    if not target.found or target.ownerId == bot.ownPlayerId:
+      continue
+    for source in planets:
+      if not source.found or source.ownerId != bot.ownPlayerId:
+        continue
+      if source.id == target.id:
+        continue
+      let needed =
+        bot.captureCostFrom(source, target) - bot.committedAgainst(target.id)
+      if needed <= 0:
+        # Already paid for; spend these ships somewhere that needs them.
+        continue
+      let percent = sendPercentFor(bot.estimatedShips(source), needed)
+      if percent == 0:
+        continue
+      let cost = bot.waveCost(planets, source, target, needed)
+      if cost < bestCost:
+        bestCost = cost
+        result = Wave(
+          sourceId: source.id,
+          targetId: target.id,
+          percent: percent
+        )
+
+proc massLaunchTotal(
+  bot: Bot,
+  planets: openArray[PlanetSight],
+  targetId, percent: int
+): int =
+  ## Returns how many ships every owned planet launches together.
+  for source in planets:
+    if source.found and source.ownerId == bot.ownPlayerId and
+        source.id != targetId:
+      result += launchCount(bot.estimatedShips(source), percent)
+
+proc planMassWave(bot: Bot, planets: openArray[PlanetSight]): Wave =
+  ## Picks a target the whole empire can take together.
+  ##
+  ## Selecting every planet at once is what the select-all click is for:
+  ## when no single planet can fund a capture the bot would otherwise sit
+  ## on its ships, and pooling them turns a stall into a capture. It is a
+  ## fallback rather than a default because one wave from everywhere
+  ## sends far more than a cheap neutral is worth.
+  result = Wave(sourceId: -1, targetId: -1, percent: 0)
+  var bestNeeded = high(int)
+  for target in planets:
+    if not target.found or target.ownerId == bot.ownPlayerId:
+      continue
+    let needed = bot.captureCost(target) - bot.committedAgainst(target.id)
+    if needed <= 0 or needed >= bestNeeded:
+      continue
+    var percent = MinSendPercent
+    while percent <= MaxSendPercent:
+      if bot.massLaunchTotal(planets, target.id, percent) >= needed:
+        bestNeeded = needed
+        result = Wave(sourceId: -2, targetId: target.id, percent: percent)
+        break
+      percent += SendPercentStep
+
+proc richestOwned(bot: Bot, planets: openArray[PlanetSight]): PlanetSight =
+  ## Returns the owned planet holding the most ships: where the fleet is.
+  var best = -1
+  for planet in planets:
+    if not planet.found or planet.ownerId != bot.ownPlayerId:
+      continue
+    let ships = bot.estimatedShips(planet)
+    if ships > best:
+      best = ships
+      result = planet
+
+proc ownedCount(bot: Bot, planets: openArray[PlanetSight]): int =
+  ## Returns how many planets we hold.
+  for planet in planets:
+    if planet.found and planet.ownerId == bot.ownPlayerId:
+      inc result
+
+proc bigPlanetsLeft(bot: Bot, planets: openArray[PlanetSight]): bool =
+  ## Returns true while any large planet is still not ours.
+  for planet in planets:
+    if planet.found and planet.ownerId != bot.ownPlayerId and
+        planet.radius >= LargeSpriteRadius:
+      return true
+  false
+
+proc updatePhase(bot: var Bot, planets: openArray[PlanetSight]) =
+  ## Advances the opening plan. Phases only ever move forward.
+  case bot.phase
+  of PhaseOpening:
+    if bot.ownedCount(planets) >= OpeningPlanetTarget:
+      bot.phase = PhaseBigPlanets
+  of PhaseBigPlanets:
+    if not bot.bigPlanetsLeft(planets):
+      bot.phase = PhaseSnake
+  of PhaseSnake:
+    discard
+
+proc nearestTarget(
+  bot: Bot,
+  planets: openArray[PlanetSight],
+  fromPlanet: PlanetSight,
+  wantBig: bool,
+  maxShips, available: int
+): PlanetSight =
+  ## Returns the closest planet this fleet can actually take.
+  ##
+  ## Affordability is not optional even at a full send: a wave that lands
+  ## one ship short changes nothing, and the target keeps every ship it
+  ## survived with. Nearest-first is the plan; nearest-we-can-hold is the
+  ## plan that works.
+  var bestDistance = high(int)
+  for target in planets:
+    if not target.found or target.ownerId == bot.ownPlayerId:
+      continue
+    if wantBig and target.radius < LargeSpriteRadius:
+      continue
+    if maxShips > 0 and bot.estimatedShips(target) > maxShips:
+      continue
+    let needed =
+      bot.captureCost(target) - bot.committedAgainst(target.id)
+    if needed <= 0 or needed > available:
+      continue
+    let away = distance(fromPlanet.x, fromPlanet.y, target.x, target.y)
+    if away < bestDistance:
+      bestDistance = away
+      result = target
+
+proc decideCommands(bot: var Bot): seq[BotCommand] =
+  ## Returns the clicks to send this tick.
+  let planets = bot.visiblePlanets()
+  bot.rememberPlanets(planets)
+  bot.updateIdentity(planets)
+  bot.selectedPlanetId = planets.selectedPlanetId()
   if bot.ownPlayerId <= 0:
-    bot.intent = "finding color"
-    return bot.sweepMask(visiblePlanets)
-
-  if bot.mode == ModeHome:
-    bot.sendTargetId = -1
-    bot.sendOriginId = -1
-    bot.sendUntilTick = 0
-    bot.currentTargetId = -1
-    let origin = bot.chooseHomeOrigin(knownPlanets)
-    if not origin.found:
-      bot.intent = "finding owned planet"
-      return bot.opportunisticSendMask(
-        knownPlanets,
-        bot.sweepMask(visiblePlanets)
-      )
-    if origin.ships >= 0 and origin.ships <= OriginReserveShips:
-      let mask = bot.sweepMask(visiblePlanets)
-      bot.intent = "waiting home ships " & $origin.id
-      return bot.opportunisticSendMask(knownPlanets, mask)
-    bot.launchOriginId = origin.id
-    bot.launchOriginShips = origin.homeShipScore()
-    if bot.originPlanetId != origin.id:
-      bot.intent = "home origin " & $origin.id &
-        " ships " & $bot.launchOriginShips
-      if bot.selectedPlanetId == origin.id:
-        if bot.frameTick mod OriginSelectInterval == 0:
-          return ButtonA
-        return 0
-      return bot.opportunisticSendMask(
-        knownPlanets,
-        bot.steerToPlanet(visiblePlanets, origin)
-      )
-    bot.mode = ModeExplore
-
-  var origin = knownPlanets.findPlanet(bot.launchOriginId)
-  if not origin.found or origin.ownerId != bot.ownPlayerId:
-    bot.mode = ModeHome
-    bot.intent = "lost launch origin"
-    return bot.opportunisticSendMask(
-      knownPlanets,
-      bot.sweepMask(visiblePlanets)
-    )
-  if origin.ships >= 0:
-    bot.launchOriginShips = origin.ships
-  if bot.sendTargetId > 0 and bot.frameTick >= bot.sendUntilTick:
-    bot.mode = ModeHome
-    bot.sendTargetId = -1
-    bot.sendOriginId = -1
-    bot.sendUntilTick = 0
-    bot.intent = "return home"
-    return bot.opportunisticSendMask(
-      knownPlanets,
-      bot.sweepMask(visiblePlanets)
-    )
-
-  var target = PlanetSight()
-  if bot.sendTargetId > 0 and bot.frameTick < bot.sendUntilTick:
-    target = knownPlanets.findPlanet(bot.sendTargetId)
-    if target.found and target.ownerId == bot.ownPlayerId and
-        target.ships >= HomePreferredShips:
-      bot.mode = ModeHome
-      bot.intent = "advance from captured " & $target.id
-      return bot.opportunisticSendMask(
-        knownPlanets,
-        bot.sweepMask(visiblePlanets)
-      )
+    # Nothing identifies us yet. Select everything we own; the rings that
+    # come back name our planets and our color.
+    bot.intent = "identify"
+    return @[BotCommand(kind: ClickSelectAll, x: 0, y: 0)]
+  if bot.sweptAtTick < 0 and planets.len > 0:
+    var owned = 0
+    for planet in planets:
+      if planet.ownerId == bot.ownPlayerId:
+        inc owned
+    if owned == planets.len:
+      bot.sweptAtTick = bot.frameTick
+      echo "SWEEP tick=", bot.frameTick, " planets=", owned
+  if bot.frameTick < bot.waveCooldownUntil:
+    bot.intent = "cooldown"
+    return @[]
+  bot.updatePhase(planets)
+  let anchor = bot.richestOwned(planets)
+  if not anchor.found:
+    bot.intent = "no planets"
+    return @[]
+  # Every wave is a full commitment, so the fleet stays together instead
+  # of dribbling out in pieces that arrive too small to take anything.
+  let
+    pooled = bot.massLaunchTotal(planets, -1, FleetPercent)
+    solo = launchCount(bot.estimatedShips(anchor), FleetPercent)
+    target =
+      case bot.phase
+      of PhaseOpening:
+        bot.nearestTarget(
+          planets, anchor, false, OpeningMaxNeutralShips, pooled
+        )
+      of PhaseBigPlanets:
+        bot.nearestTarget(planets, anchor, true, 0, pooled)
+      of PhaseSnake:
+        bot.nearestTarget(planets, anchor, false, 0, solo)
   if not target.found:
-    target = bot.chooseTargetFromOrigin(knownPlanets, origin)
-  if not target.found:
-    bot.intent = "explore from " & $origin.id
-    return bot.opportunisticSendMask(
-      knownPlanets,
-      bot.sweepMask(visiblePlanets)
-    )
-  bot.currentTargetId = target.id
-
-  if bot.selectedPlanetId != target.id:
-    if bot.selectionStuckTicks > RetargetTicks:
-      bot.avoidedTargetId = target.id
-      bot.avoidUntilTick = bot.frameTick + RetargetTicks
-      bot.currentTargetId = -1
-      bot.sendTargetId = -1
-      bot.sendUntilTick = 0
-      bot.intent = "skip planet " & $target.id
-      return bot.opportunisticSendMask(
-        knownPlanets,
-        bot.sweepMask(visiblePlanets)
+    # The phase filter found nothing; fall back to anything capturable so
+    # the bot never idles waiting for a planet that will not appear.
+    # Prefer the snake: if the stack alone can take the nearest planet,
+    # send only that stack and leave every other planet's ships free for
+    # the next capture. Pool the empire only when one planet is short.
+    let soloTarget = bot.nearestTarget(planets, anchor, false, 0, solo)
+    if soloTarget.found:
+      bot.waveCooldownUntil = bot.frameTick + WaveCooldownTicks
+      bot.commit(soloTarget, anchor, solo, flightTicks(anchor, soloTarget))
+      bot.lastWave = Wave(
+        sourceId: anchor.id, targetId: soloTarget.id, percent: FleetPercent
       )
-    bot.intent = "outward target " & $target.id
-    return bot.opportunisticSendMask(
-      knownPlanets,
-      bot.steerToPlanet(visiblePlanets, target)
+      bot.intent = "snake " & $anchor.id & " -> " & $soloTarget.id
+      return @[
+        BotCommand(
+          kind: ClickPlain, x: anchor.x, y: anchor.y, percent: FleetPercent
+        ),
+        BotCommand(
+          kind: ClickPlain, x: soloTarget.x, y: soloTarget.y, percent: 0
+        )
+      ]
+    let anyTarget = bot.nearestTarget(planets, anchor, false, 0, pooled)
+    if not anyTarget.found:
+      bot.intent = "nothing left to take"
+      return @[]
+    bot.waveCooldownUntil = bot.frameTick + WaveCooldownTicks
+    bot.commit(anyTarget, anchor, pooled, flightTicks(anchor, anyTarget))
+    bot.lastWave = Wave(
+      sourceId: anchor.id, targetId: anyTarget.id, percent: FleetPercent
     )
-
-  if bot.sendTargetId != target.id or bot.frameTick >= bot.sendUntilTick:
-    bot.startSendBurst(origin, target)
-  if origin.ships >= 0 and origin.ships <= OriginReserveShips:
-    bot.mode = ModeHome
-    bot.intent = "origin drained"
-    return bot.opportunisticSendMask(
-      knownPlanets,
-      bot.sweepMask(visiblePlanets)
+    bot.intent = "fallback -> " & $anyTarget.id
+    return @[
+      BotCommand(
+        kind: ClickSelectAll, x: 0, y: 0, percent: FleetPercent
+      ),
+      BotCommand(kind: ClickPlain, x: anyTarget.x, y: anyTarget.y, percent: 0)
+    ]
+  bot.waveCooldownUntil = bot.frameTick + WaveCooldownTicks
+  if bot.phase == PhaseSnake:
+    # One stack rolling forward: send everything from wherever the fleet
+    # currently sits to the nearest neutral, then again from there.
+    bot.commit(target, anchor, solo, flightTicks(anchor, target))
+    bot.lastWave = Wave(
+      sourceId: anchor.id, targetId: target.id, percent: FleetPercent
     )
-  if bot.frameTick < bot.sendUntilTick:
-    if target.ownerId == 0:
-      bot.intent = "drain neutral " & $target.id
-    else:
-      bot.intent = "drain enemy " & $target.id
-    return ButtonB
+    bot.intent = "snake " & $anchor.id & " -> " & $target.id
+    return @[
+      BotCommand(
+        kind: ClickPlain, x: anchor.x, y: anchor.y, percent: FleetPercent
+      ),
+      BotCommand(kind: ClickPlain, x: target.x, y: target.y, percent: 0)
+    ]
+  bot.commit(target, anchor, pooled, flightTicks(anchor, target))
+  bot.lastWave = Wave(
+    sourceId: -2, targetId: target.id, percent: FleetPercent
+  )
+  bot.intent = $bot.phase & " -> " & $target.id
+  @[
+    BotCommand(kind: ClickSelectAll, x: 0, y: 0, percent: FleetPercent),
+    BotCommand(kind: ClickPlain, x: target.x, y: target.y, percent: 0)
+  ]
 
-  bot.mode = ModeHome
-  bot.intent = "return home"
-  bot.opportunisticSendMask(knownPlanets, bot.sweepMask(visiblePlanets))
-
-proc addU16(packet: var seq[uint8], value: int) =
-  ## Appends one little endian unsigned 16 bit value.
-  let v = uint16(value)
+proc addI16(packet: var seq[uint8], value: int) =
+  ## Appends one little endian signed 16 bit value.
+  let v = uint16(int16(value))
   packet.add(uint8(v and 0xff'u16))
   packet.add(uint8(v shr 8))
 
-proc playerInputBlob(mask: uint8): string =
-  ## Builds a sprite protocol player input packet.
-  blobFromBytes([0x84'u8, mask and 0x7f'u8])
+proc sendPercentBlob(percent: int): string =
+  ## Builds a Planet Wars send-size packet.
+  blobFromBytes([PlanetWarsPercent, uint8(clamp(percent, 10, 100))])
+
+proc clickBlob(command: BotCommand): string =
+  ## Builds a Planet Wars click packet.
+  var bytes: seq[uint8] = @[PlanetWarsClick]
+  bytes.addI16(command.x)
+  bytes.addI16(command.y)
+  bytes.add(command.kind)
+  blobFromBytes(bytes)
 
 proc chatBlob(text: string): string =
   ## Builds a sprite protocol text input packet.
@@ -891,34 +961,15 @@ proc chatBlob(text: string): string =
     bytes.add(uint8(ord(ch)))
   blobFromBytes(bytes)
 
-proc maskSummary(mask: uint8): string =
-  ## Returns a compact human-readable input mask.
-  if (mask and ButtonUp) != 0:
-    result.add("U")
-  if (mask and ButtonDown) != 0:
-    result.add("D")
-  if (mask and ButtonLeft) != 0:
-    result.add("L")
-  if (mask and ButtonRight) != 0:
-    result.add("R")
-  if (mask and ButtonA) != 0:
-    result.add("A")
-  if (mask and ButtonB) != 0:
-    result.add("B")
-  if result.len == 0:
-    result = "."
-
-proc echoDebug(bot: Bot, mask: uint8, force = false) =
+proc echoDebug(bot: Bot, force = false) =
   ## Prints occasional bot status for local tuning.
   if not force and bot.frameTick mod TargetFps != 0:
     return
   echo "step=", bot.frameTick,
-    " keys=", mask.maskSummary(),
-    " camera=", bot.cameraX, ",", bot.cameraY,
     " self=", bot.ownPlayerId,
-    " origin=", bot.originPlanetId,
     " selected=", bot.selectedPlanetId,
-    " target=", bot.currentTargetId,
+    " wave=", bot.lastWave.sourceId, "->", bot.lastWave.targetId,
+    " pct=", bot.lastWave.percent,
     " intent=", bot.intent
 
 proc queryEscape(value: string): string =
@@ -988,17 +1039,10 @@ proc initBot(): Bot =
   result.ownPlayerId = -1
   result.selectedPlanetId = -1
   result.originPlanetId = -1
-  result.lastSelectedPlanetId = -1
-  result.currentTargetId = -1
-  result.targetStartedTick = -RetargetTicks
-  result.avoidedTargetId = -1
-  result.mode = ModeHome
-  result.launchOriginId = -1
-  result.launchOriginShips = 0
-  result.sendTargetId = -1
-  result.sendOriginId = -1
-  result.sweepIndex = result.rng.rand(SweepPoints.high)
-  result.lastMask = 0xff'u8
+  result.lastWave = Wave(sourceId: -1, targetId: -1, percent: 0)
+  result.sweptAtTick = -1
+  result.committedShips = newSeq[int](MaxPlanetCount + 1)
+  result.commitmentExpiry = newSeq[int](MaxPlanetCount + 1)
 
 proc acceptServerMessage(
   ws: WebSocket,
@@ -1052,19 +1096,21 @@ proc runBot(
       var bot = initBot()
       let ws = newWebSocket(endpoint)
       connected = true
-      var lastMask = 0xff'u8
+      var lastPercent = 0
       if chat:
         ws.send(chatBlob("skurge online"), BinaryMessage)
       while true:
         if not ws.receiveUpdates(bot):
           continue
-        let mask = bot.decideNextMask()
-        bot.echoDebug(mask, mask != lastMask)
-        if mask != lastMask:
-          ws.send(playerInputBlob(mask), BinaryMessage)
-          lastMask = mask
+        let commands = bot.decideCommands()
+        bot.echoDebug(commands.len > 0)
+        for command in commands:
+          if command.percent > 0 and command.percent != lastPercent:
+            ws.send(sendPercentBlob(command.percent), BinaryMessage)
+            lastPercent = command.percent
+          ws.send(clickBlob(command), BinaryMessage)
         if maxSteps > 0 and bot.frameTick >= maxSteps:
-          bot.echoDebug(mask, true)
+          bot.echoDebug(true)
           ws.close()
           return
     except CatchableError as e:

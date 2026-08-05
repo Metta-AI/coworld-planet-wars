@@ -54,7 +54,7 @@ const
   PlaybackSpeeds* = [1, 2, 3, 4, 8, 16]
   ReplayKeyframeTicks* = 100
   PlanetWarsReplayMagic = "PLANETWR"
-  PlanetWarsReplayFormatVersion = 1'u16
+  PlanetWarsReplayFormatVersion = 2'u16
   PlanetWarsReplaySpec = ReplaySpec(
     magic: PlanetWarsReplayMagic,
     formatVersion: PlanetWarsReplayFormatVersion,

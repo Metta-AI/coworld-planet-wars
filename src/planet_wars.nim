@@ -1,5 +1,5 @@
 import
-  std/[json, os],
+  std/[json, os, strutils],
   bitworld/runtime,
   jsony,
   planet_wars/server,
@@ -53,6 +53,7 @@ proc isKnownConfigField(name: string): bool =
       "planetCount",
       "maxTicks",
       "maxGames",
+      "defaultSendPercent",
       "tokens",
       "num_agents":
     true
@@ -86,6 +87,10 @@ proc update(config: var RunConfig, jsonText: string) =
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("planetCount", config.simConfig.planetCount)
   node.readConfigInt("maxTicks", config.simConfig.maxTicks)
+  node.readConfigInt(
+    "defaultSendPercent",
+    config.simConfig.defaultSendPercent
+  )
   node.readConfigInt("maxGames", config.simConfig.maxGames)
   node.readConfigStrings("tokens", config.tokens)
   node.readConfigInt("num_agents", config.numAgents)
@@ -119,6 +124,12 @@ when isMainModule:
       tokens: @[]
     )
   config.update(runtimeConfig.config)
+  # An environment variable rather than a flag: bitworld's runtime parses
+  # and rejects unknown argv before this code runs.
+  let speedText = getEnv("PLANET_WARS_SPEED")
+  if speedText.len > 0:
+    serverSpeedMultiplier = max(1, parseInt(speedText))
+    echo "Planet Wars clock speed: ", serverSpeedMultiplier, "x"
   config.simConfig.checkSimConfig()
   config.echoStartupConfig()
   if runtimeConfig.replayMode:
