@@ -1,0 +1,21 @@
+services:
+  game:
+    image: coworld-planet-wars-game:0.2.0
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+  skurge:
+    image: coworld-planet-wars-skurge:0.2.0
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: players/skurge/Dockerfile
+      network: host
+  commissioner:
+    image: coworld-planet-wars-commissioner:0.2.0
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: commissioner/Dockerfile

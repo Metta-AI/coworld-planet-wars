@@ -200,7 +200,7 @@
       "type": "reporter",
       "name": "Default Reporter",
       "description": "Default Coworld reporter for generic episode artifacts.",
-      "image": "{{REPORTER_IMAGE}}"
+      "image": "ghcr.io/metta-ai/reporters-default:latest"
     }
   ],
   "grader": [
