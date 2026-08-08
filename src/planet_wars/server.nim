@@ -333,12 +333,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   appState.inputMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
-    let removedPlayerId = sim.players[removedIndex].id
-    sim.removePlayerById(removedPlayerId)
-    sim.players.delete(removedIndex)
-    for _, value in appState.playerIndices.mpairs:
-      if value > removedIndex and value != UnassignedPlayerIndex:
-        dec value
+    sim.disconnectPlayerAt(removedIndex)
 
 proc resetConnectedClients() =
   ## Clears per-game websocket state while keeping sockets connected.
@@ -374,7 +369,7 @@ proc recordPlayerLeave(
     return
   replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
   if playerIndex < replayWriter.lastMasks.len:
-    replayWriter.lastMasks.delete(playerIndex)
+    replayWriter.lastMasks[playerIndex] = 0
 
 proc rewardAddress(address: string): string =
   ## Returns the reward protocol identity for one address.

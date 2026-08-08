@@ -66,6 +66,19 @@ doAssert remainingGame.gameOver
 doAssert remainingGame.winnerPlayerId == winnerId
 doAssert remainingJson["win"][winnerIndex].getBool()
 
+echo "Testing disconnected players retain fixed result seats"
+var disconnectGame = initSimServer(126, defaultSimConfig())
+for playerIndex in 0 ..< 8:
+  discard disconnectGame.addPlayer("player-" & $playerIndex)
+disconnectGame.disconnectPlayerAt(3)
+let disconnectJson = parseJson(disconnectGame.playerScoresJson())
+doAssert disconnectGame.players.len == 8
+doAssert disconnectJson["names"].len == 8
+doAssert disconnectJson["scores"].len == 8
+doAssert disconnectJson["win"].len == 8
+doAssert disconnectJson["planets"].len == 8
+doAssert disconnectJson["ships"].len == 8
+
 echo "Testing in-flight ships keep a player active"
 var shipConfig = defaultSimConfig()
 shipConfig.planetCount = 4
@@ -331,6 +344,7 @@ var writer = openReplayWriter(
 )
 doAssert writer.enabled
 var appliedMasks = [0'u8, 0'u8]
+var connected = [true, true]
 for playerIndex in 0 ..< 2:
   let joinedIndex = recordedGame.addPlayer("bot" & $playerIndex)
   doAssert joinedIndex == playerIndex
@@ -349,8 +363,14 @@ recordedGame.step([])
 doAssert not recordedGame.waitingForPlayers
 doAssert recordedGame.tickCount == 0
 while not recordedGame.gameOver:
+  if recordedGame.tickCount == ReplayTestTicks - 1:
+    writer.writeLeave(tickTime(recordedGame.tickCount), 1)
+    recordedGame.disconnectPlayerAt(1)
+    connected[1] = false
   var inputs = newSeq[PlayerInput](recordedGame.players.len)
   for playerIndex in 0 ..< recordedGame.players.len:
+    if not connected[playerIndex]:
+      continue
     let mask = scriptedMask(playerIndex, recordedGame.tickCount)
     inputs[playerIndex] = playerInputFromMasks(
       mask,
@@ -382,6 +402,7 @@ while playback.playing:
 doAssert not playback.hashValidationFailed
 doAssert playbackGame.tickCount == ReplayTestTicks
 doAssert playbackGame.gameHash() == recordedFinalHash
+doAssert playbackGame.players.len == 2
 doAssert playbackGame.chatMessages.len == recordedGame.chatMessages.len
 doAssert playbackGame.chatMessages[0].text == "glhf"
 
