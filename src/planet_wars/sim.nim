@@ -928,12 +928,11 @@ proc initSimServer*(
   result.generateStars()
   result.markScoresChanged()
 
-proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
-  ## Removes one player from the simulation, compacting indices.
+proc disconnectPlayerAt*(sim: var SimServer, playerIndex: int) =
+  ## Removes one player's live pieces while preserving its result seat.
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   sim.removePlayerById(sim.players[playerIndex].id)
-  sim.players.delete(playerIndex)
 
 proc mixHash(hash: var uint64, value: uint64) =
   ## Mixes one value into a running FNV-1a style hash.

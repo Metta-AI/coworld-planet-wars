@@ -251,11 +251,11 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let leave = replay.data.leaves[replay.leaveIndex]
     if int(leave.player) < 0 or int(leave.player) >= sim.players.len:
       raise newException(ReplayError, "Replay player leave is invalid")
-    sim.removePlayerAt(int(leave.player))
+    sim.disconnectPlayerAt(int(leave.player))
     if int(leave.player) < replay.masks.len:
-      replay.masks.delete(int(leave.player))
+      replay.masks[int(leave.player)] = 0
     if int(leave.player) < replay.lastAppliedMasks.len:
-      replay.lastAppliedMasks.delete(int(leave.player))
+      replay.lastAppliedMasks[int(leave.player)] = 0
     inc replay.leaveIndex
 
   while replay.joinIndex < replay.data.joins.len and
