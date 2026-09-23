@@ -20,6 +20,6 @@ jobs:
       - run: |
           cd ..
           nimby create
-          nimby sync coworld-planet-wars/nimby.lock
+          nimby sync "$GITHUB_WORKSPACE/nimby.lock"
       - run: nim check src/planet_wars.nim
       - run: nim r tests/tests.nim
