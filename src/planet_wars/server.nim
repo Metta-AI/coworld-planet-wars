@@ -272,6 +272,9 @@ proc websocketHandler(
   of OpenEvent:
     discard
   of MessageEvent:
+    if message.kind == Ping:
+      websocket.send(message.data, Pong)
+      return
     if message.kind != BinaryMessage:
       return
     {.gcsafe.}:
