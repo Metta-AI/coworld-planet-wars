@@ -22,6 +22,11 @@ nimble build
 
 Open `http://localhost:8080/client/global` to spectate.
 
+Recorded `.bitreplay` files use the native Nim simulation for playback. Open
+`/client/replay` on a replay server for the star map, score overview, and
+playback controls. The browser page keeps the authoritative sprite stream;
+it does not substitute another Planet Wars ruleset.
+
 ## Bot
 
 The bundled Nim bot is `skurge`.
