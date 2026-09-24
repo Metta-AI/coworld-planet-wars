@@ -1079,6 +1079,7 @@ proc runBot(
   let endpoint = connectUrl(address, url, name, token, port, slot)
   var connected = false
   while true:
+    var modelDecisionActive = false
     try:
       echo "kudzu connecting to ", endpoint
       var bot = initBot()
@@ -1093,7 +1094,9 @@ proc runBot(
           if lastMask != 0:
             ws.send(playerInputBlob(0), BinaryMessage)
             lastMask = 0
+            modelDecisionActive = true
             journal.recordInput(bot, 0)
+          modelDecisionActive = true
           var planets = newJArray()
           for planet in bot.knownPlanetSights():
             planets.add(%*{
@@ -1127,6 +1130,7 @@ proc runBot(
             }))
             journal.flushFile()
           bot.pendingChoices.setLen(0)
+          modelDecisionActive = false
           continue
         bot.pendingChoices.setLen(0)
         bot.echoDebug(mask, mask != lastMask)
@@ -1139,6 +1143,8 @@ proc runBot(
           ws.close()
           return
     except CatchableError as e:
+      if modelDecisionActive:
+        raise
       if exitOnDisconnect and connected:
         echo "kudzu exiting after disconnect: ", e.msg
         return
