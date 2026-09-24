@@ -109,6 +109,7 @@ type
 
   GlobalViewerState* = object
     initialized*: bool
+    compact*: bool
     objectIds*: seq[int]
     playerSpriteKeys: seq[PlayerSpriteKey]
     playerNameKeys: seq[PlayerTextSpriteKey]
@@ -273,20 +274,31 @@ proc shipDirection(ship: Ship): int =
       3
 
 proc buildPlanetSprite(size: PlanetSize, color: RgbaColor): RgbaSprite =
-  ## Builds one planet base sprite.
+  ## Builds a lit planet with a readable owner-colored edge.
   let
     radius = planetRadius(size)
     spriteRadius = planetSpriteRadius(size)
     center = spriteRadius
     dim = spriteRadius * 2 + 1
-    border = color.scaleColor(42)
-    shade = color.scaleColor(72)
-    highlight = color.mixColor(ScoreColor, 42)
   result = newRgbaSprite(dim, dim)
-  result.drawCircleFill(center, center, radius + 1, color)
-  result.drawCircleRing(center, center, radius + 1, 1, border)
-  result.drawCircleRing(center, center, max(1, radius - 2), 1, shade)
-  result.putRgbaPixel(center - radius div 2, center - radius div 2, highlight)
+  result.drawCircleRing(center, center, radius + 2, 1, color.scaleColor(45))
+  for y in -radius .. radius:
+    for x in -radius .. radius:
+      let distance = x * x + y * y
+      if distance > radius * radius:
+        continue
+      let light = clamp(103 - x * 2 - y * 3 -
+        distance * 28 div (radius * radius), 42, 145)
+      var pixel = color.scaleColor(light)
+      if distance > (radius - 2) * (radius - 2):
+        pixel = pixel.mixColor(ScoreColor, 22)
+      elif (x + y * 3) mod 11 == 0:
+        pixel = pixel.mixColor(ScoreColor, 12)
+      result.putRgbaPixel(center + x, center + y, pixel)
+  result.drawCircleRing(center, center, radius, 1,
+    color.mixColor(ScoreColor, 45))
+  result.putRgbaPixel(center - radius div 3, center - radius div 2,
+    color.mixColor(ScoreColor, 70))
 
 proc buildPlanetRingSprite(size: PlanetSize, color: RgbaColor): RgbaSprite =
   ## Builds one planet ring overlay sprite.
@@ -338,13 +350,27 @@ proc buildCursorSprite(color: RgbaColor): RgbaSprite =
     result.putRgbaPixel(center, i, color)
 
 proc buildBackgroundSprite(sim: SimServer): RgbaSprite {.measure.} =
-  ## Builds the starfield background sprite.
+  ## Builds a quiet starfield that keeps fleets and planets legible.
   result = newRgbaSprite(WorldWidthPixels, WorldHeightPixels)
   for y in 0 ..< result.height:
     for x in 0 ..< result.width:
-      result.putRgbaPixel(x, y, BackgroundColor)
+      let
+        cloudA = max(0, 55 - ((x - 140) * (x - 140) div 650 +
+          (y - 360) * (y - 360) div 1300))
+        cloudB = max(0, 48 - ((x - 390) * (x - 390) div 950 +
+          (y - 130) * (y - 130) div 900))
+        blue = RgbaColor(r: 34, g: 75, b: 120, a: 255)
+        violet = RgbaColor(r: 69, g: 42, b: 111, a: 255)
+      let pixel = BackgroundColor.mixColor(blue, cloudA).mixColor(violet, cloudB)
+      result.putRgbaPixel(x, y, pixel)
   for star in sim.stars:
     result.putRgbaPixel(star.x, star.y, star.color)
+    if (star.x + star.y) mod 9 == 0:
+      let halo = star.color.scaleColor(35)
+      result.putRgbaPixel(star.x - 1, star.y, halo)
+      result.putRgbaPixel(star.x + 1, star.y, halo)
+      result.putRgbaPixel(star.x, star.y - 1, halo)
+      result.putRgbaPixel(star.x, star.y + 1, halo)
 
 proc blitGlyph(
   sprite: var RgbaSprite,
@@ -1811,6 +1837,7 @@ proc buildSpriteProtocolUpdates*(
   sim: SimServer,
   state: GlobalViewerState,
   nextState: var GlobalViewerState,
+  showScorePanel = true,
   replayControls = false,
   replayTick = -1,
   replaySpeed = 1,
@@ -1848,7 +1875,8 @@ proc buildSpriteProtocolUpdates*(
     WorldWidthPixels,
     WorldHeightPixels
   )
-  sim.addGlobalScorePanel(result, currentIds, state, nextState)
+  if showScorePanel:
+    sim.addGlobalScorePanel(result, currentIds, state, nextState)
   if sim.waitingForPlayers:
     sim.addWaitingForPlayersOverlay(
       result,
