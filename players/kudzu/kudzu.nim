@@ -1040,6 +1040,17 @@ proc receiveUpdates(ws: WebSocket, bot: var Bot): bool =
       result = true
     inc drained
 
+proc recordInput(journal: File, bot: Bot, mask: uint8) =
+  if journal == nil:
+    return
+  journal.writeLine($(%*{
+    "event_type": "input_mask", "frame_tick": bot.frameTick,
+    "player_id": bot.ownPlayerId, "mask": mask,
+    "mission_origin": bot.mission.originId,
+    "mission_target": bot.mission.targetId
+  }))
+  journal.flushFile()
+
 proc runBot(
   address = DefaultHost,
   port = DefaultPort,
@@ -1082,6 +1093,7 @@ proc runBot(
           if lastMask != 0:
             ws.send(playerInputBlob(0), BinaryMessage)
             lastMask = 0
+            journal.recordInput(bot, 0)
           var planets = newJArray()
           for planet in bot.knownPlanetSights():
             planets.add(%*{
@@ -1108,7 +1120,7 @@ proc runBot(
           if journal != nil:
             journal.writeLine($(%*{
               "event_type": "mission_choice", "frame_tick": bot.frameTick,
-              "player_id": bot.ownPlayerId, "model": model,
+              "player_id": bot.ownPlayerId, "name": name, "model": model,
               "request": reply.request, "response": reply.response,
               "selected": {"origin_id": selected.originId,
                            "target_id": selected.targetId, "budget": selected.budget}
@@ -1121,6 +1133,7 @@ proc runBot(
         if mask != lastMask:
           ws.send(playerInputBlob(mask), BinaryMessage)
           lastMask = mask
+          journal.recordInput(bot, mask)
         if maxSteps > 0 and bot.frameTick >= maxSteps:
           bot.echoDebug(mask, true)
           ws.close()

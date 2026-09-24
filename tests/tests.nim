@@ -1,10 +1,11 @@
 import
-  std/[json, os],
+  std/[json, os, sequtils, strutils],
   bitworld/spriteprotocol,
   planet_wars/global,
   planet_wars/replays,
   planet_wars/sim,
-  ../players/kudzu/systemone
+  ../players/kudzu/systemone,
+  ../players/kudzu/mission_export
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
 
@@ -428,6 +429,39 @@ doAssert playbackGame.gameHash() == recordedFinalHash
 doAssert playbackGame.players.len == 2
 doAssert playbackGame.chatMessages.len == recordedGame.chatMessages.len
 doAssert playbackGame.chatMessages[0].text == "glhf"
+
+echo "Testing mission export requires matching replay inputs"
+let journalPath = getTempDir() / ("planet-wars-mission-" & $getCurrentProcessId() & ".jsonl")
+let resultsPath = getTempDir() / ("planet-wars-results-" & $getCurrentProcessId() & ".json")
+let completePath = getTempDir() / ("planet-wars-complete-" & $getCurrentProcessId() & ".jsonl")
+var journalLines = $(%*{
+  "event_type": "mission_choice", "name": "bot0", "player_id": recordedGame.players[0].id,
+  "model": "stub", "request": {"model": "stub", "state": {"known_planets": []}},
+  "response": {"model": "stub", "answers": {"mission": {"choice": "mission_0"}}},
+  "selected": {"origin_id": 999, "target_id": 999, "budget": 1}
+}) & "\n"
+for input in replayData.inputs:
+  if input.player == 0:
+    journalLines.add($( %*{
+      "event_type": "input_mask", "mask": input.keys,
+      "mission_origin": 999, "mission_target": 999
+    }) & "\n")
+writeFile(journalPath, journalLines)
+writeFile(resultsPath, recordedGame.playerScoresJson())
+let exported = exportEpisode(
+  journalPath, replayPath, resultsPath, completePath,
+  "planet-test", repeat('a', 40)
+)
+doAssert exported["episode"]["status"].getStr() == "completed"
+doAssert exported["decisions"][0]["action_status"].getStr() == "rejected"
+let firstMask = replayData.inputs.filterIt(it.player == 0)[0].keys
+let tampered = journalLines.replace("\"mask\":" & $firstMask, "\"mask\":127")
+writeFile(journalPath, tampered)
+doAssertRaises(ValueError):
+  discard exportEpisode(
+    journalPath, replayPath, resultsPath, completePath & ".tampered",
+    "planet-test-tampered", repeat('b', 40)
+  )
 
 echo "Testing replay keyframes seek to exact ticks"
 var
