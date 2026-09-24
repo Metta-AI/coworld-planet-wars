@@ -30,3 +30,20 @@ The bundled Nim bot is `skurge`.
 nim c --path:src players/skurge/skurge.nim
 ./players/skurge/skurge --address:localhost --port:8080
 ```
+
+Kudzu can trial typed SystemOne decisions at its mission boundary. It sends
+only decoded player-visible planet sightings and affordable mission candidates.
+The selected mission still becomes ordinary pointer and button input over the
+same sprite WebSocket. The bot releases held input before the bounded model call.
+
+```bash
+nim c -d:ssl --path:src players/kudzu/kudzu.nim
+TYPESAFE_API_KEY=<key> ./players/kudzu/kudzu --address:localhost --port:8080 \
+  --systemone --model:jev-latest --journal:mission-decisions.jsonl
+```
+
+The journal is created with mode `0600` and retains exact requests, replies,
+and selected missions without the API key. `TYPESAFE_BASE_URL` may point to a
+local model stub. The journal currently records model intents; a game-result
+join and completed trajectory export are needed before posttraining labels can
+be selected from Planet Wars.

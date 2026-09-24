@@ -3,9 +3,32 @@ import
   bitworld/spriteprotocol,
   planet_wars/global,
   planet_wars/replays,
-  planet_wars/sim
+  planet_wars/sim,
+  ../players/kudzu/systemone
 
 setCurrentDir(currentSourcePath().parentDir().parentDir())
+
+echo "Testing typed mission choices stay within player-visible candidates"
+let missionOptions = @[
+  MissionChoice(originId: 1, targetId: 3, budget: 8, score: 10),
+  MissionChoice(originId: 2, targetId: 4, budget: 6, score: 20)
+]
+let missionQuestion = missionRequest(%*{"known_planets": [{"id": 1}, {"id": 2}]}, missionOptions, "jev-latest")
+doAssert missionQuestion["questions"]["mission"]["criteria"].len == 2
+doAssert parseMissionChoice(%*{"answers": {"mission": {
+  "type": "choice", "choice": "mission_1",
+  "probabilities": {"mission_0": 0.2, "mission_1": 0.8}
+}}}, missionOptions.len) == 1
+doAssertRaises(ValueError):
+  discard parseMissionChoice(%*{"answers": {"mission": {
+    "type": "choice", "choice": "mission_9",
+    "probabilities": {"mission_0": 0.2, "mission_1": 0.8}
+  }}}, missionOptions.len)
+doAssertRaises(ValueError):
+  discard parseMissionChoice(%*{"answers": {"mission": {
+    "type": "choice", "choice": "mission_0",
+    "probabilities": {"mission_0": 0.2, "mission_1": 0.8}
+  }}}, missionOptions.len)
 
 const
   PlayerPlanetSpriteBaseForTest = 1000

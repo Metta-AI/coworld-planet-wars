@@ -11,10 +11,11 @@
 ## Protocol layer (sprite parsing, connection) is shared with sprout.
 
 import
-  std/[options, os, parseopt, strutils],
+  std/[json, options, os, parseopt, posix, strutils],
   supersnappy, whisky,
   bitworld/spriteprotocol,
-  planet_wars/sim
+  planet_wars/sim,
+  systemone
 
 const
   MaxDrainMessages = 256
@@ -151,6 +152,7 @@ type
     sweepIndex: int
     intent: string
     mission: Mission
+    pendingChoices: seq[MissionChoice]
     lastSelectedId: int
     selectionStuckTicks: int
     avoidedTargetId: int
@@ -229,6 +231,7 @@ proc resetGameState(bot: var Bot) =
   bot.lossAccum.setLen(0)
   bot.lossTick.setLen(0)
   bot.originFailStreak.setLen(0)
+  bot.pendingChoices.setLen(0)
   bot.frameTick = 0
   bot.ownPlayerId = -1
   bot.lastSelectedId = -1
@@ -639,7 +642,9 @@ proc planMission(bot: var Bot, known: openArray[PlanetSight]) =
     bestScore = high(int)
     bestOrigin = PlanetSight()
     bestTarget = PlanetSight()
+  bot.pendingChoices.setLen(0)
   for wantEnemies in [false, true]:
+    bot.pendingChoices.setLen(0)
     for target in known:
       if target.ownerId == bot.ownPlayerId:
         continue
@@ -687,6 +692,11 @@ proc planMission(bot: var Bot, known: openArray[PlanetSight]) =
       # Fast-growing planets get a bounded bonus as future ship factories.
       let score = originScore + cost * cost -
         SizeScoreBonus[clamp(target.sizeOrd, 0, 2)]
+      let surplus = max(0, origin.availableShips() - cost)
+      bot.pendingChoices.add(MissionChoice(
+        originId: origin.id, targetId: target.id,
+        budget: cost + surplus div 2, score: score
+      ))
       if score < bestScore:
         bestScore = score
         bestOrigin = origin
@@ -1038,9 +1048,23 @@ proc runBot(
   token = "",
   slot = -1,
   maxSteps = 0,
-  exitOnDisconnect = false
+  exitOnDisconnect = false,
+  useJev = false,
+  model = "jev-latest",
+  journalPath = ""
 ) =
   ## Connects Kudzu to Planet Wars and runs the mission loop.
+  let apiKey = if useJev: getEnv("TYPESAFE_API_KEY") else: ""
+  if useJev and apiKey.len == 0:
+    raise newException(ValueError, "TYPESAFE_API_KEY is required for typed missions")
+  var journal: File
+  if journalPath.len > 0:
+    let descriptor = posix.open(journalPath.cstring, O_WRONLY or O_CREAT or O_EXCL, 0o600.Mode)
+    if descriptor < 0 or not journal.open(FileHandle(descriptor), fmWrite):
+      raise newException(IOError, "Could not create private mission journal")
+  defer:
+    if journal != nil:
+      journal.close()
   let endpoint = connectUrl(address, url, name, token, port, slot)
   var connected = false
   while true:
@@ -1054,6 +1078,45 @@ proc runBot(
         if not ws.receiveUpdates(bot):
           continue
         let mask = bot.decideNextMask()
+        if useJev and bot.pendingChoices.len > 1:
+          if lastMask != 0:
+            ws.send(playerInputBlob(0), BinaryMessage)
+            lastMask = 0
+          var planets = newJArray()
+          for planet in bot.knownPlanetSights():
+            planets.add(%*{
+              "id": planet.id, "owner_id": planet.ownerId,
+              "estimated_ships": planet.ships, "last_seen_tick": planet.seenTick,
+              "x": planet.x, "y": planet.y, "size": planet.sizeOrd
+            })
+          let state = %*{
+            "game": "Planet Wars", "frame_tick": bot.frameTick,
+            "own_player_id": bot.ownPlayerId, "known_planets": planets
+          }
+          let reply = chooseMission(
+            state, bot.pendingChoices, model,
+            getEnv("TYPESAFE_BASE_URL", "https://api.typesafe.ai") & "/v1/systemone", apiKey
+          )
+          let selected = bot.pendingChoices[reply.index]
+          bot.mission = Mission(
+            phase: PhaseGoOrigin, originId: selected.originId,
+            targetId: selected.targetId, budget: selected.budget,
+            startedTick: bot.frameTick
+          )
+          bot.intent = "model mission " & $selected.originId & "->" &
+            $selected.targetId & " budget " & $selected.budget
+          if journal != nil:
+            journal.writeLine($(%*{
+              "event_type": "mission_choice", "frame_tick": bot.frameTick,
+              "player_id": bot.ownPlayerId, "model": model,
+              "request": reply.request, "response": reply.response,
+              "selected": {"origin_id": selected.originId,
+                           "target_id": selected.targetId, "budget": selected.budget}
+            }))
+            journal.flushFile()
+          bot.pendingChoices.setLen(0)
+          continue
+        bot.pendingChoices.setLen(0)
         bot.echoDebug(mask, mask != lastMask)
         if mask != lastMask:
           ws.send(playerInputBlob(mask), BinaryMessage)
@@ -1083,6 +1146,9 @@ when isMainModule:
     slot = -1
     maxSteps = 0
     exitOnDisconnect = url.len > 0
+    useJev = false
+    model = "jev-latest"
+    journalPath = ""
 
   for kind, key, value in getopt():
     case kind
@@ -1104,6 +1170,12 @@ when isMainModule:
         maxSteps = parseInt(value)
       of "exit-on-disconnect":
         exitOnDisconnect = true
+      of "systemone":
+        useJev = true
+      of "model":
+        model = value
+      of "journal":
+        journalPath = value
       else:
         raise newException(ValueError, "Unknown option: --" & key)
     of cmdArgument, cmdShortOption:
@@ -1119,5 +1191,8 @@ when isMainModule:
     token,
     slot,
     maxSteps,
-    exitOnDisconnect
+    exitOnDisconnect,
+    useJev,
+    model,
+    journalPath
   )

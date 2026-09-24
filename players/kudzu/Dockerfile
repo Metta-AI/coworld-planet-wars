@@ -32,7 +32,7 @@ RUN nimby sync nimby.lock -g
 COPY . .
 RUN nimby sync nimby.lock -g
 
-ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
+ARG NimFlags="-d:release -d:ssl -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
 ARG NimMain="players/kudzu/kudzu.nim"
 RUN nim $NimCommand \
