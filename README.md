@@ -35,3 +35,9 @@ The bundled Nim bot is `skurge`.
 nim c --path:src players/skurge/skurge.nim
 ./players/skurge/skurge --address:localhost --port:8080
 ```
+
+## Numeric policy training
+
+See [training/README.md](training/README.md) for the headless eight-seat bridge,
+private sprite observation decoder, bounded optimizer smoke, and ordinary
+WebSocket player image.

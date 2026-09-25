@@ -634,6 +634,23 @@ proc runServerLoop*(
             " (", getFileSize(saveReplayPath), " bytes)"
           runtimeConfig.writeReplay(readFile(saveReplayPath))
       if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
+        for websocket in sockets:
+          websocket.close()
+        for websocket in rewardViewers:
+          websocket.close()
+        for websocket in globalViewers:
+          websocket.close()
+        let closeDeadline = getMonoTime() + initDuration(seconds = 1)
+        while getMonoTime() < closeDeadline:
+          var closedPlayers = 0
+          {.gcsafe.}:
+            withLock appState.lock:
+              for websocket in sockets:
+                if websocket in appState.closedSockets:
+                  inc closedPlayers
+          if closedPlayers == sockets.len:
+            break
+          sleep(5)
         break
       sim = initSimServer(seed + gamesFinished, simConfig, expectedPlayers)
       lastScoreRevision = -1
