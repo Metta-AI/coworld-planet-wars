@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir numpy==2.3.3 websockets==15.0.1
+WORKDIR /app
+COPY training/__init__.py training/policy.py training/sprite_view.py training/player.py /app/training/
+ARG MODEL_FILE=training/model.npz
+COPY ${MODEL_FILE} /app/model.npz
+ENV PLANET_WARS_MODEL=/app/model.npz
+CMD ["python", "-m", "training.player"]

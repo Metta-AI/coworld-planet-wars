@@ -6,3 +6,6 @@ dist/
 /players/skurge/skurge
 nim.cfg
 /players/kudzu/kudzu
+/training/model.npz
+/training/smoke-model.npz
+__pycache__/

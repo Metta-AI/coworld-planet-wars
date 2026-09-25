@@ -23,3 +23,11 @@ jobs:
           "$RUNNER_TEMP/nimby" sync nimby.lock -g
       - run: nim check src/planet_wars.nim
       - run: nim r tests/tests.nim
+      - run: nim r --path:src training/test_bridge.nim
+      - run: nim c --path:src -o:$RUNNER_TEMP/planet-training-bridge training/bridge.nim
+      - run: python -m training.smoke "$RUNNER_TEMP/planet-training-bridge"
+      - run: python -m pip install numpy==2.3.3
+      - run: nim c --threads:on -o:$RUNNER_TEMP/planet-wars-server src/planet_wars.nim
+      - run: nim c --path:src -o:$RUNNER_TEMP/planet-wars-skurge players/skurge/skurge.nim
+      - run: python -m training.docker_smoke --server "$RUNNER_TEMP/planet-wars-server" --skurge "$RUNNER_TEMP/planet-wars-skurge" --output "$RUNNER_TEMP/planet-wars-smoke"
+      - run: nim r --path:src training/check_replay.nim "$RUNNER_TEMP/planet-wars-smoke/replay.bitreplay"
