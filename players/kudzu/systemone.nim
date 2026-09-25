@@ -67,14 +67,15 @@ proc parseMissionChoice*(response: JsonNode, count: int): int =
   if maximum > selected + 0.01 + 1e-6:
     raise newException(ValueError, "SystemOne selected a lower-ranked mission")
 
-proc chooseMission*(state: JsonNode, options: openArray[MissionChoice], model, url, key: string): MissionReply =
+proc chooseMission*(state: JsonNode, options: openArray[MissionChoice], model, url, key: string, slot = -1): MissionReply =
   result.request = missionRequest(state, options, model)
   let client = newHttpClient(timeout = 3000)
   defer: client.close()
-  client.headers = newHttpHeaders({
-    "Content-Type": "application/json",
-    "Authorization": "Bearer " & key
-  })
+  client.headers = newHttpHeaders({"Content-Type": "application/json"})
+  if key.len > 0:
+    client.headers["Authorization"] = "Bearer " & key
+  if slot >= 0:
+    client.headers["X-Coworld-Player-Slot"] = $slot
   let response = client.request(url, httpMethod = HttpPost, body = $result.request)
   if response.code != Http200:
     raise newException(ValueError, "SystemOne returned HTTP " & $response.code)

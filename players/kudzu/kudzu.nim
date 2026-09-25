@@ -1061,13 +1061,17 @@ proc runBot(
   maxSteps = 0,
   exitOnDisconnect = false,
   useJev = false,
-  model = "jev-latest",
+  model = "",
   journalPath = ""
 ) =
   ## Connects Kudzu to Planet Wars and runs the mission loop.
-  let apiKey = if useJev: getEnv("TYPESAFE_API_KEY") else: ""
-  if useJev and apiKey.len == 0:
-    raise newException(ValueError, "TYPESAFE_API_KEY is required for typed missions")
+  let sidecar = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+  let apiKey = if useJev and sidecar.len == 0: getEnv("TYPESAFE_API_KEY") else: ""
+  if useJev and sidecar.len == 0 and apiKey.len == 0:
+    raise newException(ValueError, "TYPESAFE_API_KEY is required for direct typed missions")
+  let missionModel = if model.len > 0: model else: (if sidecar.len > 0: "typesafe/jev-1.13" else: "jev-latest")
+  let missionUrl = if sidecar.len > 0: sidecar.strip(chars = {'/'}) & "/v1/systemone" else:
+    getEnv("TYPESAFE_BASE_URL", "https://api.typesafe.ai").strip(chars = {'/'}) & "/v1/systemone"
   var journal: File
   if journalPath.len > 0:
     let descriptor = posix.open(journalPath.cstring, O_WRONLY or O_CREAT or O_EXCL, 0o600.Mode)
@@ -1109,8 +1113,8 @@ proc runBot(
             "own_player_id": bot.ownPlayerId, "known_planets": planets
           }
           let reply = chooseMission(
-            state, bot.pendingChoices, model,
-            getEnv("TYPESAFE_BASE_URL", "https://api.typesafe.ai") & "/v1/systemone", apiKey
+            state, bot.pendingChoices, missionModel, missionUrl, apiKey,
+            (if sidecar.len > 0: slot else: -1)
           )
           let selected = bot.pendingChoices[reply.index]
           bot.mission = Mission(
@@ -1123,7 +1127,7 @@ proc runBot(
           if journal != nil:
             journal.writeLine($(%*{
               "event_type": "mission_choice", "frame_tick": bot.frameTick,
-              "player_id": bot.ownPlayerId, "name": name, "model": model,
+              "player_id": bot.ownPlayerId, "name": name, "model": missionModel,
               "request": reply.request, "response": reply.response,
               "selected": {"origin_id": selected.originId,
                            "target_id": selected.targetId, "budget": selected.budget}
@@ -1166,7 +1170,7 @@ when isMainModule:
     maxSteps = 0
     exitOnDisconnect = url.len > 0
     useJev = false
-    model = "jev-latest"
+    model = ""
     journalPath = ""
 
   for kind, key, value in getopt():

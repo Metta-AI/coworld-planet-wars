@@ -42,6 +42,10 @@ Kudzu can trial typed SystemOne decisions at its mission boundary. It sends
 only decoded player-visible planet sightings and affordable mission candidates.
 The selected mission still becomes ordinary pointer and button input over the
 same sprite WebSocket. The bot releases held input before the bounded model call.
+Hosted players send Jev calls to the pod's `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`
+sidecar with pinned model `typesafe/jev-1.13`; they do not need a TypeSafe key.
+The league must allow that model. Direct local trials use `TYPESAFE_API_KEY`
+and default to `jev-latest` unless `--model` overrides it.
 
 ```bash
 nim c -d:ssl --path:src players/kudzu/kudzu.nim
