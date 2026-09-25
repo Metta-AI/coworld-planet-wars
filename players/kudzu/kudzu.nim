@@ -1128,6 +1128,7 @@ proc runBot(
             journal.writeLine($(%*{
               "event_type": "mission_choice", "frame_tick": bot.frameTick,
               "player_id": bot.ownPlayerId, "name": name, "model": missionModel,
+              "latency_ms": reply.latencyMs,
               "request": reply.request, "response": reply.response,
               "selected": {"origin_id": selected.originId,
                            "target_id": selected.targetId, "budget": selected.budget}

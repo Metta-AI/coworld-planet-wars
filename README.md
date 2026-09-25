@@ -55,7 +55,8 @@ TYPESAFE_API_KEY=<key> ./players/kudzu/kudzu --address:localhost --port:8080 \
 ```
 
 The journal is created with mode `0600` and retains exact requests, replies,
-selected missions, and sent input masks without the API key. `TYPESAFE_BASE_URL`
+model round-trip latency in milliseconds, selected missions, and sent input masks
+without the API key. `TYPESAFE_BASE_URL`
 may point to a local model stub. After a game that saved results and a replay,
 export only replay-verified ship launches to the shared trajectory contract:
 

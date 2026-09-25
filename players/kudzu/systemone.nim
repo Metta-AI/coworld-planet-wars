@@ -1,6 +1,6 @@
 ## Typed mission choice over the player's decoded Planet Wars view.
 
-import std/[httpclient, json]
+import std/[httpclient, json, monotimes, times]
 
 type
   MissionChoice* = object
@@ -13,6 +13,7 @@ type
     index*: int
     request*: JsonNode
     response*: JsonNode
+    latencyMs*: int64
 
 proc missionRequest*(state: JsonNode, options: openArray[MissionChoice], model: string): JsonNode =
   if options.len < 2:
@@ -76,8 +77,10 @@ proc chooseMission*(state: JsonNode, options: openArray[MissionChoice], model, u
     client.headers["Authorization"] = "Bearer " & key
   if slot >= 0:
     client.headers["X-Coworld-Player-Slot"] = $slot
+  let started = getMonoTime()
   let response = client.request(url, httpMethod = HttpPost, body = $result.request)
   if response.code != Http200:
     raise newException(ValueError, "SystemOne returned HTTP " & $response.code)
   result.response = parseJson(response.body)
+  result.latencyMs = (getMonoTime() - started).inMilliseconds
   result.index = parseMissionChoice(result.response, options.len)
