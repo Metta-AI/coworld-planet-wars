@@ -22,6 +22,11 @@ nimble build
 
 Open `http://localhost:8080/client/global` to spectate.
 
+Recorded `.bitreplay` files use the native Nim simulation for playback. Open
+`/client/replay` on a replay server for the star map, score overview, and
+playback controls. The browser page keeps the authoritative sprite stream;
+it does not substitute another Planet Wars ruleset.
+
 ## Bot
 
 The bundled Nim bot is `skurge`.
@@ -30,6 +35,8 @@ The bundled Nim bot is `skurge`.
 nim c --path:src players/skurge/skurge.nim
 ./players/skurge/skurge --address:localhost --port:8080
 ```
+
+## Jev mission trial
 
 Kudzu can trial typed SystemOne decisions at its mission boundary. It sends
 only decoded player-visible planet sightings and affordable mission candidates.
@@ -64,3 +71,9 @@ nim c --path:src players/kudzu/mission_export.nim
 The exporter requires a hash-valid complete replay, an exact input ledger,
 and results matching the replay. It writes a mode-`0600` `CompleteEpisode`
 JSONL file for `metta-posttrain export-hosted`.
+
+## Numeric policy training
+
+See [training/README.md](training/README.md) for the headless eight-seat bridge,
+private sprite observation decoder, bounded optimizer smoke, and ordinary
+WebSocket player image.

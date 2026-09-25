@@ -6,6 +6,8 @@ import
 
 const
   HealthzPath = "/healthz"
+  ReplayStatePath = "/replay/state"
+  ReplayPage = staticRead("../../client/replay.html")
   UnassignedPlayerIndex = 0x7fffffff
 
 type
@@ -24,6 +26,7 @@ type
     closedSockets: seq[WebSocket]
     replayServerMode: bool
     replayLoaded: bool
+    replayState: string
     pendingReplayUri: string
 
   ServerThreadArgs = object
@@ -49,6 +52,7 @@ proc initAppState() =
   appState.closedSockets = @[]
   appState.replayServerMode = false
   appState.replayLoaded = false
+  appState.replayState = "{\"loaded\":false}"
   appState.pendingReplayUri = ""
 
 proc isWebSocketUpgrade(request: Request): bool =
@@ -182,6 +186,15 @@ proc httpHandler(request: Request) =
   ## Handles HTTP routes and websocket upgrades.
   if request.serveHealthz():
     discard
+  elif request.path == ReplayStatePath and request.httpMethod == "GET":
+    var replayState: string
+    {.gcsafe.}:
+      withLock appState.lock:
+        replayState = appState.replayState
+    var headers: HttpHeaders
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    headers["Cache-Control"] = "no-store"
+    request.respond(200, headers, replayState)
   elif request.path == WebSocketPath and
       request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
@@ -218,7 +231,9 @@ proc httpHandler(request: Request) =
         appState.inputMasks.del(websocket)
         appState.lastAppliedMasks.del(websocket)
         appState.rewardViewers.del(websocket)
-        appState.globalViewers[websocket] = initGlobalViewerState()
+        var state = initGlobalViewerState()
+        state.compact = request.queryParams.getOrDefault("compact", "") == "1"
+        appState.globalViewers[websocket] = state
   elif request.path == ReplayWebSocketPath and
       request.httpMethod == "GET" and request.isWebSocketUpgrade():
     if not request.checkReplayRequest():
@@ -237,12 +252,16 @@ proc httpHandler(request: Request) =
   elif request.path == ReplayWebSocketPath and request.httpMethod == "GET":
     if not request.checkReplayRequest():
       return
-    discard request.serveClientFile(ReplayClientRoute, GlobalClientRoute)
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/html; charset=utf-8"
+    request.respond(200, headers, ReplayPage)
   elif request.path in [ReplayClientRoute, CoworldReplayClientRoute] and
       request.httpMethod == "GET":
     if not request.checkReplayRequest():
       return
-    discard request.serveClientFile(request.path, GlobalClientRoute)
+    var headers: HttpHeaders
+    headers["Content-Type"] = "text/html; charset=utf-8"
+    request.respond(200, headers, ReplayPage)
   elif request.path == RewardWebSocketPath and request.httpMethod == "GET" and
       request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
@@ -615,6 +634,23 @@ proc runServerLoop*(
             " (", getFileSize(saveReplayPath), " bytes)"
           runtimeConfig.writeReplay(readFile(saveReplayPath))
       if simConfig.maxGames > 0 and gamesFinished >= simConfig.maxGames:
+        for websocket in sockets:
+          websocket.close()
+        for websocket in rewardViewers:
+          websocket.close()
+        for websocket in globalViewers:
+          websocket.close()
+        let closeDeadline = getMonoTime() + initDuration(seconds = 1)
+        while getMonoTime() < closeDeadline:
+          var closedPlayers = 0
+          {.gcsafe.}:
+            withLock appState.lock:
+              for websocket in sockets:
+                if websocket in appState.closedSockets:
+                  inc closedPlayers
+          if closedPlayers == sockets.len:
+            break
+          sleep(5)
         break
       sim = initSimServer(seed + gamesFinished, simConfig, expectedPlayers)
       lastScoreRevision = -1
@@ -739,12 +775,36 @@ proc runReplayServerLoop*(
           replay.seekReplay(sim, 0)
           replay.playing = true
 
+    var players = newJArray()
+    for player in sim.players:
+      players.add(%*{
+        "name": player.name,
+        "score": player.score,
+        "planets": sim.countOwnedPlanets(player.id),
+        "color": [player.color.r, player.color.g, player.color.b]
+      })
+    let replayState = $(%*{
+      "loaded": replayLoaded,
+      "tick": sim.tickCount,
+      "maxTick": replay.replayMaxTick(),
+      "playing": replay.playing,
+      "speed": replay.replaySpeed(),
+      "gameOver": sim.gameOver,
+      "planetCount": sim.planets.len,
+      "fleetCount": sim.ships.len,
+      "players": players
+    })
+    {.gcsafe.}:
+      withLock appState.lock:
+        appState.replayState = replayState
+
     for i in 0 ..< viewerSockets.len:
       var nextState: GlobalViewerState
       let packet = sim.buildSpriteProtocolUpdates(
         viewerStates[i],
         nextState,
-        replayControls = replayLoaded,
+        showScorePanel = not viewerStates[i].compact,
+        replayControls = replayLoaded and not viewerStates[i].compact,
         replayTick = sim.tickCount,
         replaySpeed = replay.replaySpeed(),
         replayMaxTick = replay.replayMaxTick(),
