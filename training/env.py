@@ -30,9 +30,12 @@ class PlanetWarsEnv:
         return self
 
     def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
         if self.process.poll() is None:
             self.process.terminate()
-        self.process.wait()
+        self.process.communicate()
 
     def _request(self, command: dict[str, object]) -> dict[str, object]:
         assert self.process.stdin is not None
