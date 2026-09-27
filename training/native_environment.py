@@ -6,10 +6,14 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
-from pydantic import Field
-
-from metta_training.environment import EnvironmentContext, EnvironmentSpec, NumericObservation, NumericTransition
+from metta_training.environment import (
+    EnvironmentContext,
+    EnvironmentSpec,
+    NumericObservation,
+    NumericTransition,
+)
 from metta_training.game import Record
+from pydantic import Field
 
 from .env import PlanetWarsEnv
 from .sprite_view import ACTION_MASKS, OBSERVATION_SIZE

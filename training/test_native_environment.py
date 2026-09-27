@@ -6,7 +6,6 @@ from sys import argv
 from tempfile import TemporaryDirectory
 
 import numpy as np
-
 from metta_training.environment import EnvironmentContext
 
 from .env import PlanetWarsEnv
