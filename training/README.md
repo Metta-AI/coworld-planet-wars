@@ -13,18 +13,38 @@ python -m training.test_train /tmp/planet-training-bridge
 
 `training/test_bridge.nim` checks each seat's packet bytes, action edges, scores, ticks, and game hash against a direct game simulation. The smoke runs an eight-seat, 47-planet, 1,200-tick match and decodes all eight private views. Each feature vector has 386 values: own cursor position, then visibility, ownership, ship count, relative position, planet size, selected ring, and origin ring for each of 48 possible planets. Invisible planets have zero features. The policy has 36 actions: nine directional choices crossed with A and B button states. A fires on a press edge; B stays held. A choice is repeated for six simulation ticks by default.
 
-A bounded CPU policy-gradient run and ordinary player packaging:
+A bounded CPU reference experiment:
 
 ```bash
 python -m training.train --bridge /tmp/planet-training-bridge --output training/model.npz --total-timesteps 9600 --episode-ticks 1200
-docker build -f training/Dockerfile.player -t planet-wars-trained:local .
 ```
 
 The timestep budget counts seat policy decisions, excluding repeated simulation ticks.
 Choose a positive multiple of eight for the eight-seat batch.
 A budget ending mid-episode bootstraps the last visible value before the optimizer update.
 
-The NumPy model file is generated locally and ignored by git. `training/player.py` loads it from `PLANET_WARS_MODEL`, connects through `COWORLD_PLAYER_WS_URL`, decodes only its private sprite packets, and sends ordinary two-byte button messages. The Dockerfile packages the generated model. Its one-episode optimizer smoke verifies training and loading mechanics; it does not establish policy strength. Evaluate checkpoints against held-out seeds and bundled Skurge before using one competitively.
+The NumPy model is a local, ignored artifact for the CPU reference experiment.
+`training.test_train` checks its optimizer budget and NumPy inference parity.
+
+## Ordinary numeric player
+
+The player connects through `COWORLD_PLAYER_WS_URL` and decodes only its private sprite packets.
+Every six packets it requests a choice from `PLAYER_NUMERIC_URL`, then sends an ordinary two-byte held-button message.
+Requests include the session, seat, decision ID, 386 finite features, and 36 legal mask entries.
+The player validates the selected index. Transport and schema errors terminate the player; the game retains its normal disconnect behavior.
+
+Build the player image and serve the shared pipeline's exported bundle:
+
+```bash
+docker build -f training/Dockerfile.player -t planet-wars-numeric:local .
+# From Metta:
+uv run --package metta-training metta-choice-serve train_dir/planet-wars-native/policy --port 18958
+# Run the image with COWORLD_PLAYER_WS_URL and PLAYER_NUMERIC_URL=http://host:18958/choice.
+```
+
+The image contains the ordinary client and sprite codec, without a game server, provider credential, or checkpoint copy.
+`training.docker_smoke` checks a real mixed container game against a typed HTTP choice stub.
+Stub routing proves the player boundary, not policy strength.
 
 ## Shared Metta native environment
 
@@ -79,7 +99,7 @@ run_training(Path("train_dir/planet-wars-native"), config)
 Set `PYTHONPATH` to the game checkout when launching that Python program from Metta.
 The timestep count includes all seats; eight environments contain 64 agents.
 Default episodes preserve the game's 18,000-tick duration and 47 planets.
-Native Fabric optimization, checkpoint export, and ordinary-player reload still require execution proof.
-The existing NumPy player loads the separate CPU smoke model; it cannot load a Fabric bundle.
+Run bounded optimization, held-out evaluation, and ordinary socket reload before using a bundle competitively.
+The CPU reference experiment remains a separate comparison control.
 
 The canonical Coworld manifest and eight-Skurge certification roster stay unchanged. No hosted version or policy is published by these commands.

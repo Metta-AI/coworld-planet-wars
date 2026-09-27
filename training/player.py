@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets.sync.client import connect
 
-from .policy import TrainedPolicy
+from .numeric_policy import NumericPolicy
 from .sprite_view import ACTION_MASKS, SpriteView
 
 
@@ -17,7 +16,7 @@ def main() -> None:
     query = dict(parse_qsl(endpoint.query))
     name = query.setdefault("name", "trained-policy")
     url = urlunsplit(endpoint._replace(query=urlencode(query)))
-    policy = TrainedPolicy(Path(os.environ["PLANET_WARS_MODEL"]))
+    policy = NumericPolicy(os.environ["PLAYER_NUMERIC_URL"])
     view = SpriteView(name)
     frame = 0
     previous_mask = 0
@@ -31,7 +30,7 @@ def main() -> None:
             frame += 1
             if frame % 6 != 1:
                 continue
-            mask = ACTION_MASKS[policy.action(view.features())]
+            mask = ACTION_MASKS[policy.action(view.features(), view.own_player_id - 1, frame)]
             if mask != previous_mask:
                 socket.send(bytes((0x84, mask)))
                 previous_mask = mask
