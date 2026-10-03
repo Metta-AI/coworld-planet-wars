@@ -9,7 +9,10 @@ proc terminal(world: SimServer): JsonNode =
       "ships": world.ships, "players": world.players, "chat": world.chatMessages,
       "stars": world.stars, "config": world.config, "scoreRevision": world.scoreRevision,
       "rng": $world.rng, "nextPlayerId": world.nextPlayerId,
-      "scoreTicks": world.scoreTicks, "maxActiveOwnerCount": world.maxActiveOwnerCount}
+      "scoreTicks": world.scoreTicks, "maxActiveOwnerCount": world.maxActiveOwnerCount,
+      "waitingForPlayers": world.waitingForPlayers,
+      "expectedPlayers": world.expectedPlayers, "waitTicks": world.waitTicks,
+      "textFont": $world.textFont}
 
 let path = paramStr(1)
 doAssert path.len > 0, "Pass an existing PLANETWR replay path"
