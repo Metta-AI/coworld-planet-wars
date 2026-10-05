@@ -3,7 +3,7 @@
   "tags": ["strategy", "real-time", "multiplayer"],
   "game": {
     "name": "planet_wars",
-    "description": "A BitWorld strategy game where players conquer planets and launch ships across a tiny star map.",
+    "description": "An eight-player BitWorld strategy game on a tiny star map. This adaptation has not been verified against Simon Lucas’s Planet Wars RTS engine or bot protocol.",
     "owner": "treeform@softmax.com",
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -132,7 +132,7 @@
     "docs": {
       "readme": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/main/README.md"
+        "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/master/README.md"
       },
       "pages": [
         {
@@ -148,7 +148,7 @@
           "title": "play_planet_wars.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/main/README.md"
+            "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/master/README.md"
           }
         },
         {
