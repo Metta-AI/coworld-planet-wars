@@ -1,7 +1,13 @@
 # Planet Wars
 
-Coworld strategy game where players conquer planets and launch ships across
-a tiny star map.
+A BitWorld strategy game where eight players conquer planets and launch ships
+across a tiny star map. This repository implements its own Nim simulation and
+BitWorld sprite protocol.
+
+This is not a verified port of Simon Lucas’s Planet Wars RTS engine. Upstream
+bot compatibility, rules parity, and use of the AAMAS agent pool have not been
+established. Community evaluations should identify this game as the BitWorld
+adaptation; results do not establish performance in the upstream competition.
 
 ## Coworld package
 
