@@ -6,6 +6,7 @@ import base64
 import json
 import subprocess
 from pathlib import Path
+from typing import Self
 
 from .sprite_view import ACTION_MASKS, OBSERVATION_SIZE, SpriteView
 
@@ -26,13 +27,16 @@ class PlanetWarsEnv:
         )
         self.views = [SpriteView(f"training-{seat}") for seat in range(player_count)]
 
-    def __enter__(self) -> PlanetWarsEnv:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
         if self.process.poll() is None:
             self.process.terminate()
-        self.process.wait()
+        self.process.communicate()
 
     def _request(self, command: dict[str, object]) -> dict[str, object]:
         assert self.process.stdin is not None
