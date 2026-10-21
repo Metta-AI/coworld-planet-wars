@@ -22,17 +22,13 @@ class ActorCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(128, len(ACTION_MASKS)),
         )
-        self.critic = nn.Sequential(
-            nn.Linear(OBSERVATION_SIZE, 128), nn.ReLU(), nn.Linear(128, 1)
-        )
+        self.critic = nn.Sequential(nn.Linear(OBSERVATION_SIZE, 128), nn.ReLU(), nn.Linear(128, 1))
 
     def forward(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.actor(observation), self.critic(observation).squeeze(-1)
 
 
-def train(
-    bridge: Path, output: Path, seed: int, total_timesteps: int, episode_ticks: int
-) -> None:
+def train(bridge: Path, output: Path, seed: int, total_timesteps: int, episode_ticks: int) -> None:
     torch.manual_seed(seed)
     model = ActorCritic()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
@@ -46,20 +42,22 @@ def train(
             rewards = []
             entropies = []
             done = False
-            while not done:
+            while not done and completed < total_timesteps:
                 features = torch.tensor(np.asarray(observation, dtype=np.float32))
                 logits, value = model(features)
                 choices = Categorical(logits=logits)
                 actions = choices.sample()
-                observation, reward, done, info = env.step(
-                    tuple(int(action) for action in actions), repeat=6
-                )
+                observation, reward, done, info = env.step(tuple(int(action) for action in actions), repeat=6)
                 log_probabilities.append(choices.log_prob(actions))
                 values.append(value)
                 rewards.append(torch.tensor(reward, dtype=torch.float32))
                 entropies.append(choices.entropy())
+                completed += len(actions)
             returns = []
             future = torch.zeros(8)
+            if not done:
+                with torch.no_grad():
+                    _, future = model(torch.tensor(np.asarray(observation, dtype=np.float32)))
             for reward in reversed(rewards):
                 future = reward + 0.99 * future
                 returns.append(future)
@@ -74,9 +72,9 @@ def train(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            completed += int(info["tick"]) * 8
             print(
-                f"episode={episode} agent_steps={completed} scores={info['scores']} loss={loss.item():.4f}"
+                f"episode={episode} agent_steps={completed} terminal={done} "
+                f"scores={info['scores']} loss={loss.item():.4f}"
             )
             episode += 1
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -98,8 +96,8 @@ def main() -> None:
     parser.add_argument("--total-timesteps", type=int, required=True)
     parser.add_argument("--episode-ticks", type=int, default=1200)
     args = parser.parse_args()
-    if args.total_timesteps <= 0 or args.episode_ticks <= 0:
-        parser.error("timestep limits must be positive")
+    if args.total_timesteps <= 0 or args.total_timesteps % 8 != 0 or args.episode_ticks <= 0:
+        parser.error("total timesteps must be a positive multiple of eight; episode ticks must be positive")
     train(args.bridge, args.output, args.seed, args.total_timesteps, args.episode_ticks)
 
 

@@ -7,11 +7,13 @@ import json
 import socket
 import subprocess
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
+from threading import Thread
 
-import numpy as np
-
-from .sprite_view import ACTION_MASKS, OBSERVATION_SIZE
+from .numeric_policy import ChoiceRequest, ChoiceResponse
+from .sprite_view import ACTION_MASKS
 
 
 def main() -> None:
@@ -22,13 +24,24 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     args.output.mkdir(parents=True, exist_ok=True)
-    model = root / "training/smoke-model.npz"
-    w1 = np.zeros((128, OBSERVATION_SIZE), dtype=np.float32)
-    b1 = np.zeros(128, dtype=np.float32)
-    w2 = np.zeros((len(ACTION_MASKS), 128), dtype=np.float32)
-    b2 = np.zeros(len(ACTION_MASKS), dtype=np.float32)
-    b2[ACTION_MASKS.index(8)] = 1
-    np.savez(model, w1=w1, b1=b1, w2=w2, b2=b2)
+    requests: list[ChoiceRequest] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            assert self.path == "/choice"
+            request = ChoiceRequest.model_validate_json(self.rfile.read(int(self.headers["Content-Length"])))
+            assert request.seat < 2 and all(request.action_mask)
+            requests.append(request)
+            body = ChoiceResponse(choice=ACTION_MASKS.index(8)).model_dump_json().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    policy = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    policy_thread = Thread(target=policy.serve_forever, daemon=True)
+    policy_thread.start()
     subprocess.run(
         [
             "docker",
@@ -36,9 +49,7 @@ def main() -> None:
             "-f",
             "training/Dockerfile.player",
             "-t",
-            "planet-wars-trained:smoke",
-            "--build-arg",
-            "MODEL_FILE=training/smoke-model.npz",
+            "planet-wars-numeric:smoke",
             ".",
         ],
         cwd=root,
@@ -49,7 +60,9 @@ def main() -> None:
     server_log = (args.output / "server.log").open("w")
     player_log = (args.output / "player.log").open("w")
     skurge_log = (args.output / "skurge.log").open("w")
-    port = 18957
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
     server = subprocess.Popen(
         [
             str(args.server),
@@ -82,7 +95,9 @@ def main() -> None:
                 "host",
                 "-e",
                 f"COWORLD_PLAYER_WS_URL=ws://127.0.0.1:{port}/player?name=trained-policy&slot=0",
-                "planet-wars-trained:smoke",
+                "-e",
+                f"PLAYER_NUMERIC_URL=http://127.0.0.1:{policy.server_port}/choice",
+                "planet-wars-numeric:smoke",
             ],
             cwd=root,
             stdout=player_log,
@@ -107,8 +122,14 @@ def main() -> None:
         assert set(data["names"]) == {"trained-policy", "skurge"}
         assert len(data["scores"]) == 2
         assert replay.stat().st_size > 0
+        assert requests
+        assert len({(request.session, request.seat) for request in requests}) == 1
+        assert all(a.decision_id < b.decision_id for a, b in pairwise(requests))
         print(f"mixed container episode complete: {data['names']} {data['scores']}")
     finally:
+        policy.shutdown()
+        policy_thread.join()
+        policy.server_close()
         for process in (server, player, skurge):
             if process is not None and process.poll() is None:
                 process.terminate()
