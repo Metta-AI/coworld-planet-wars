@@ -47,3 +47,35 @@ nim c --path:src players/skurge/skurge.nim
 See [training/README.md](training/README.md) for the headless eight-seat bridge,
 private sprite observation decoder, bounded optimizer smoke, and ordinary
 WebSocket player image.
+
+## Opt-in replay presentation experiment
+
+`experiments/presentation_viewer.nim` draws a copied public replay snapshot with
+Polyworld shapes. It is a finite native viewer; the Coworld package continues to
+use the existing sprite viewer. Production builds do not import this adapter.
+
+Use the game dependencies in `nimby.lock`. For this renderer only, resolve
+Polyworld `449ad184052567c30fa54c269ef45ff8c9e8e29b` and Shady
+`c899f7cd17dbe7021d6e3aa2908e6de6549c47f1` into separate checkouts. The game’s
+older Shady pin lacks the renderer’s `glsl4Desktop` target. Supply those two
+`src` paths to Nim without changing the game lockfile or shared dependency cache.
+
+From the repository root, using Nim 2.2.4 and one compiler worker:
+
+```bash
+nim c -d:release --parallelBuild:1 --path:src experiments/presentation_replay_proof.nim
+experiments/presentation_replay_proof /path/to/replay.bitreplay
+nim c -d:release --parallelBuild:1 --path:src \
+  --path:"$PLANET_POLYWORLD_ROOT/src" --path:"$PLANET_SHADY_ROOT/src" \
+  experiments/presentation_viewer.nim
+experiments/presentation_viewer /path/to/replay.bitreplay 313 /path/to/frame.png 960 540
+```
+
+The proof checks recorded hashes, complete simulation state before and after
+snapshot construction, coordinate picking at three viewport sizes, and replay
+seeks. `experiments/record_conquest_fixture.nim` can generate a separate fixture
+using ordinary input masks, joins, a departure, and chat.
+
+The renderer exits after 120 frames. Its mouse hover selects the nearest planet.
+It does not implement live play, hosted viewer controls, or production art.
+Small ships and overlapping routes remain difficult to distinguish at 320×240.
