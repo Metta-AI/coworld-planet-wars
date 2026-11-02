@@ -2,7 +2,7 @@ import
   std/[json, locks, monotimes, os, strutils, tables, times],
   curly, mummy,
   bitworld/client, bitworld/profile, bitworld/spriteprotocol, bitworld/runtime,
-  sim, global, replays
+  sim, global, replays, roster
 
 const
   HealthzPath = "/healthz"
@@ -17,6 +17,9 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     chatMessages: Table[WebSocket, string]
     playerIndices: Table[WebSocket, int]
+    playerSlots: Table[WebSocket, int]
+    resultSlots: seq[int]
+    resultSlotCount: int
     playerNames: Table[WebSocket, string]
     playerViewers: Table[WebSocket, PlayerViewerState]
     globalViewers: Table[WebSocket, GlobalViewerState]
@@ -43,6 +46,8 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.chatMessages = initTable[WebSocket, string]()
   appState.playerIndices = initTable[WebSocket, int]()
+  appState.playerSlots = initTable[WebSocket, int]()
+  appState.resultSlots = @[]
   appState.playerNames = initTable[WebSocket, string]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
@@ -101,16 +106,6 @@ proc playerSlot(request: Request): int =
 proc playerToken(request: Request): string =
   ## Returns the requested player token.
   request.queryParams.getOrDefault("token", "").strip()
-
-proc playerJoinAllowed(slot: int, token: string): bool =
-  ## Returns true when the configured token list accepts a join.
-  if appState.tokens.len == 0:
-    return true
-  if slot >= 0 and slot < appState.tokens.len:
-    return token == appState.tokens[slot]
-  if slot == -1:
-    return token in appState.tokens
-  false
 
 proc isGlobalSocketPath(path: string): bool =
   ## Returns true for global viewer websocket endpoints.
@@ -201,25 +196,41 @@ proc httpHandler(request: Request) =
     let
       slot = request.playerSlot()
       token = request.playerToken()
-    var allowed = false
+    var rejectedStatus = 0
     {.gcsafe.}:
       withLock appState.lock:
-        allowed = playerJoinAllowed(slot, token)
-    if not allowed:
-      var headers: HttpHeaders
-      headers["Content-Type"] = "text/plain; charset=utf-8"
-      request.respond(403, headers, "player token rejected\n")
-      return
-    let websocket = request.upgradeToWebSocket()
-    {.gcsafe.}:
-      withLock appState.lock:
-        appState.globalViewers.del(websocket)
-        appState.rewardViewers.del(websocket)
-        appState.playerViewers[websocket] = initPlayerViewerState()
-        appState.playerNames[websocket] = request.playerIdentity()
-        appState.playerIndices[websocket] = UnassignedPlayerIndex
-        appState.inputMasks[websocket] = 0
-        appState.lastAppliedMasks[websocket] = 0
+        let capacity =
+          if appState.resultSlotCount > 0: appState.resultSlotCount
+          else: MaxPlanetCount
+        var rosterSlot = resolveRosterSlot(slot, token, appState.tokens, capacity)
+        if rosterSlot == InvalidRosterSlot:
+          rejectedStatus = 403
+        else:
+          if rosterSlot == -1:
+            var occupied: seq[int] = @[]
+            occupied.add(appState.resultSlots)
+            for claimed in appState.playerSlots.values:
+              occupied.add(claimed)
+            rosterSlot = availableRosterSlot(occupied, capacity)
+          if rosterSlot == InvalidRosterSlot:
+            rejectedStatus = 409
+          else:
+            for claimed in appState.playerSlots.values:
+              if claimed == rosterSlot:
+                rejectedStatus = 409
+        if rejectedStatus == 0:
+          # Claim and register atomically, including simultaneous socket upgrades.
+          let websocket = request.upgradeToWebSocket()
+          appState.globalViewers.del(websocket)
+          appState.rewardViewers.del(websocket)
+          appState.playerViewers[websocket] = initPlayerViewerState()
+          appState.playerNames[websocket] = request.playerIdentity()
+          appState.playerSlots[websocket] = rosterSlot
+          appState.playerIndices[websocket] = UnassignedPlayerIndex
+          appState.inputMasks[websocket] = 0
+          appState.lastAppliedMasks[websocket] = 0
+    if rejectedStatus != 0:
+      request.respond(rejectedStatus, body = "player roster rejected\n")
   elif request.path.isGlobalSocketPath() and
       request.httpMethod == "GET" and request.isWebSocketUpgrade():
     let websocket = request.upgradeToWebSocket()
@@ -227,6 +238,7 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers.del(websocket)
         appState.playerIndices.del(websocket)
+        appState.playerSlots.del(websocket)
         appState.playerNames.del(websocket)
         appState.inputMasks.del(websocket)
         appState.lastAppliedMasks.del(websocket)
@@ -243,6 +255,7 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers.del(websocket)
         appState.playerIndices.del(websocket)
+        appState.playerSlots.del(websocket)
         appState.playerNames.del(websocket)
         appState.inputMasks.del(websocket)
         appState.lastAppliedMasks.del(websocket)
@@ -269,6 +282,7 @@ proc httpHandler(request: Request) =
       withLock appState.lock:
         appState.playerViewers.del(websocket)
         appState.playerIndices.del(websocket)
+        appState.playerSlots.del(websocket)
         appState.playerNames.del(websocket)
         appState.inputMasks.del(websocket)
         appState.lastAppliedMasks.del(websocket)
@@ -334,6 +348,7 @@ proc websocketHandler(
 
 proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   ## Removes a websocket and keeps live player indices consistent.
+  appState.playerSlots.del(websocket)
   if websocket in appState.replayViewers:
     appState.replayViewers.del(websocket)
   if websocket in appState.globalViewers:
@@ -359,6 +374,7 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
 
 proc resetConnectedClients() =
   ## Clears per-game websocket state while keeping sockets connected.
+  appState.resultSlots.setLen(0)
   var
     playerSockets: seq[WebSocket] = @[]
     globalSockets: seq[WebSocket] = @[]
@@ -419,7 +435,9 @@ proc writeScoresIfNeeded(
     return
   if sim.scoreRevision == lastRevision:
     return
-  runtimeConfig.writeResults(sim.playerScoresJson() & "\n")
+  runtimeConfig.writeResults(
+    sim.rosterResultsJson(appState.resultSlots, appState.resultSlotCount) & "\n"
+  )
   lastRevision = sim.scoreRevision
 
 proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
@@ -461,6 +479,7 @@ proc runServerLoop*(
     finishProfileTrace()
   initAppState()
   appState.tokens = tokens
+  appState.resultSlotCount = max(expectedPlayers, tokens.len)
   var replayWriter = openReplayWriter(
     saveReplayPath,
     $(%*{
@@ -468,7 +487,8 @@ proc runServerLoop*(
       "planetCount": simConfig.planetCount,
       "maxTicks": simConfig.maxTicks,
       "maxGames": simConfig.maxGames,
-      "tokenCount": tokens.len
+      "tokenCount": tokens.len,
+      "resultSlotCount": appState.resultSlotCount
     })
   )
   let httpServer = newServer(
@@ -510,14 +530,22 @@ proc runServerLoop*(
             continue
           let
             name = appState.playerNames.getOrDefault(websocket, "unknown")
+            rosterSlot = appState.playerSlots[websocket]
+          var playerIndex = -1
+          for index, assignedSlot in appState.resultSlots:
+            if assignedSlot == rosterSlot:
+              playerIndex = index
+          let isNewPlayer = playerIndex < 0
+          if isNewPlayer:
             playerIndex = sim.addPlayer(name)
+            appState.resultSlots.add(rosterSlot)
           appState.playerIndices[websocket] = playerIndex
-          if replayWriter.enabled:
+          if replayWriter.enabled and isNewPlayer:
             replayWriter.writeJoin(
               tickTime(sim.tickCount),
               playerIndex,
               name,
-              -1,
+              rosterSlot,
               ""
             )
             while replayWriter.lastMasks.len < sim.players.len:

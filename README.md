@@ -48,6 +48,31 @@ See [training/README.md](training/README.md) for the headless eight-seat bridge,
 private sprite observation decoder, bounded optimizer smoke, and ordinary
 WebSocket player image.
 
+## Player identities and results
+
+The submitted roster slot is a protocol address, independent of native join order.
+With configured tokens, a token-only connection resolves to that token's slot;
+an explicit slot must match its token. A simultaneous duplicate claim is rejected.
+A reconnect keeps its existing episode actor and score, without a fresh spawn.
+
+Result names, scores, wins, planets and ships use roster order, including empty
+rows for missing participants. Replay joins retain the resolved slot.
+`replayResultsJson` reproduces this boundary while historical unmapped replays
+keep their original native-order results. Simulation order and strategy are unchanged.
+
+The native test suite includes result-mapping checks. To exercise the server
+through real sockets, use Python with `websockets` 15 and a fresh output directory:
+
+```bash
+qa_root=$(mktemp -d /tmp/planet-wars-roster.XXXXXX)
+nim c --threads:on --path:src --parallelBuild:1 --out:"$qa_root/server" src/planet_wars.nim
+nim c --path:src --parallelBuild:1 --out:"$qa_root/replay-check" tests/roster_replay.nim
+python tests/roster_wire.py --server "$qa_root/server" --output "$qa_root/wire"
+for scenario in authenticated reconnect local; do
+  "$qa_root/replay-check" "$qa_root/wire/$scenario/replay.bitreplay" "$qa_root/wire/$scenario/results.json"
+done
+```
+
 ## Opt-in replay presentation experiment
 
 `experiments/presentation_viewer.nim` draws a copied public replay snapshot with
