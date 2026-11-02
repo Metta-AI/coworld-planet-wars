@@ -3,7 +3,7 @@ import
   flatty,
   bitworld/replays as replayCodec,
   bitworld/spriteprotocol,
-  sim
+  sim, roster
 
 type
   ReplayKeyframe* = object
@@ -119,6 +119,26 @@ proc replaySimSettings*(data: ReplayData): tuple[seed: int, config: SimConfig] =
     result.config.maxTicks = node["maxTicks"].getInt()
   if node.hasKey("maxGames") and node["maxGames"].kind == JInt:
     result.config.maxGames = node["maxGames"].getInt()
+
+proc replayResultsJson*(data: ReplayData, simulation: SimServer): string =
+  ## Reproduce the result boundary without reordering native simulation actors.
+  var slots: seq[int] = @[]
+  var mapped = false
+  for join in data.joins:
+    if slots.len == simulation.players.len:
+      break
+    slots.add(int(join.slot))
+    mapped = mapped or join.slot >= 0
+  var count = 0
+  if data.configJson.len > 0:
+    let config = parseJson(data.configJson)
+    if config.hasKey("resultSlotCount"):
+      count = config["resultSlotCount"].getInt()
+      mapped = true
+  if not mapped:
+    # Historical name/slot/token replays wrote -1 for every join.
+    return simulation.playerScoresJson()
+  simulation.rosterResultsJson(slots, count)
 
 proc playerInputFromMasks*(currentMask, previousMask: uint8): PlayerInput =
   ## Builds a player input state from current and previous button masks.

@@ -5,6 +5,8 @@ import
   planet_wars/replays,
   planet_wars/sim
 
+import roster_tests
+
 setCurrentDir(currentSourcePath().parentDir().parentDir())
 
 const
