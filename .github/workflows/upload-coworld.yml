@@ -22,7 +22,7 @@ concurrency:
 
 env:
   COWORLD_NAME: planet_wars
-  COWORLD_CLI: "coworld[auth] @ git+https://github.com/Metta-AI/coworld.git@main"
+  COWORLD_CLI: "coworld[auth] @ git+https://github.com/softmax-universe/coworld.git@main"
 
 jobs:
   upload:
