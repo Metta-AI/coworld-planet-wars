@@ -22,7 +22,7 @@ concurrency:
 
 env:
   COWORLD_NAME: planet_wars
-  COWORLD_CLI: "coworld[auth] @ git+https://github.com/Metta-AI/coworld.git@main"
+  COWORLD_CLI: "coworld[auth] @ git+https://github.com/softmax-universe/coworld.git@main"
 
 jobs:
   upload:
@@ -101,5 +101,6 @@ jobs:
               raise SystemExit(f"::error::{name}:{version} not found after upload")
           if not match.get("canonical"):
               raise SystemExit(f"::error::{name}:{version} uploaded but is not canonical")
-          print(f"{name}:{version} is canonical ({match['id']})")
+          identifier = match["id"]
+          print(f"{name}:{version} is canonical ({identifier})")
           ' "$COWORLD_NAME" "${{ steps.version.outputs.version }}"

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/softmax-universe/coworld/main/src/coworld/coworld_manifest_schema.json",
   "tags": ["strategy", "real-time", "multiplayer"],
   "game": {
     "name": "planet_wars",
@@ -122,17 +122,17 @@
     "protocols": {
       "player": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+        "value": "https://github.com/softmax-universe/bitworld/blob/master/docs/sprite_v1.md"
       },
       "global": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+        "value": "https://github.com/softmax-universe/bitworld/blob/master/docs/sprite_v1.md"
       }
     },
     "docs": {
       "readme": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/master/README.md"
+        "value": "https://github.com/softmax-universe/coworld-planet-wars/blob/master/README.md"
       },
       "pages": [
         {
@@ -148,7 +148,7 @@
           "title": "play_planet_wars.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-planet-wars/blob/master/README.md"
+            "value": "https://github.com/softmax-universe/coworld-planet-wars/blob/master/README.md"
           }
         },
         {
@@ -156,7 +156,7 @@
           "title": "reward.md",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+            "value": "https://github.com/softmax-universe/bitworld/blob/master/docs/reward_v1.md"
           }
         }
       ]
@@ -165,7 +165,7 @@
       "type": "game",
       "image": "{{GAME_IMAGE}}",
       "run": ["/bin/planet_wars"],
-      "source_url": "https://github.com/Metta-AI/coworld-planet-wars/tree/master"
+      "source_url": "https://github.com/softmax-universe/coworld-planet-wars/tree/master"
     }
   },
   "player": [
@@ -176,7 +176,7 @@
       "description": "Sprite-protocol Planet Wars attacker that learns its color and slowly pressures visible planets.",
       "image": "{{SKURGE_IMAGE}}",
       "run": ["/bin/skurge"],
-      "source_url": "https://github.com/Metta-AI/coworld-planet-wars/tree/master/players/skurge"
+      "source_url": "https://github.com/softmax-universe/coworld-planet-wars/tree/master/players/skurge"
     }
   ],
   "commissioner": [
@@ -185,7 +185,7 @@
       "name": "Default Commissioner",
       "type": "commissioner",
       "description": "Game-agnostic round-robin commissioner with mean-score rankings and hourly Planet Wars rounds.",
-      "source_url": "https://github.com/Metta-AI/commissioners/tree/fa8ac7cb2bc6fd54c5675c7993919afabebcf4ba/commissioners/ruleset_strategy_commissioner",
+      "source_url": "https://github.com/softmax-universe/commissioners/tree/fa8ac7cb2bc6fd54c5675c7993919afabebcf4ba/commissioners/ruleset_strategy_commissioner",
       "image": "{{COMMISSIONER_IMAGE}}"
     }
   ],
@@ -196,7 +196,7 @@
       "name": "BitWorld Score Grader",
       "type": "grader",
       "description": "Generic BitWorld grader that scores episode interest from score spread and game-specific activity signals.",
-      "source_url": "https://github.com/Metta-AI/coworld-planet-wars/tree/master/grader/graders/bitworld_score/bitworld_score_grader",
+      "source_url": "https://github.com/softmax-universe/coworld-planet-wars/tree/master/grader/graders/bitworld_score/bitworld_score_grader",
       "image": "{{GRADER_IMAGE}}"
     }
   ],
