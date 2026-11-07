@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/softmax-universe/softmax/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/softmax-universe/coworld/main/src/coworld/coworld_manifest_schema.json",
   "tags": ["strategy", "real-time", "multiplayer"],
   "game": {
     "name": "planet_wars",
